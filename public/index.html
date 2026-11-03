@@ -21,6 +21,8 @@
     .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:18px}
     .metric{background:#0b1422;border:1px solid #24354c;padding:16px;border-radius:14px}.metric b{display:block;font-size:20px;margin-top:6px}
     .warn{color:#ffd28a}.small{font-size:12px;color:#8798b2;margin-top:18px}
+    .feedline{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid #24354c;font-size:13px}
+    .feedline:last-child{border-bottom:0}.feedvalue{color:#8edcff;font-weight:700}
   </style>
 </head>
 <body>
@@ -42,6 +44,21 @@
       <div class="metric"><span class="muted">Trading mode</span><b>Disabled</b></div>
     </div>
     <div id="accountStatus" class="status"></div>
+  </section>
+  <section class="panel" id="marketPanel">
+    <div class="row" style="justify-content:space-between">
+      <h2>Live Volatility Index scanner</h2><span class="pill" id="feedPill">STARTING</span>
+    </div>
+    <p class="muted">Public Deriv tick stream. The scanner discovers active Volatility Indices and listens to their live ticks.</p>
+    <div class="grid">
+      <div class="metric"><span class="muted">Markets discovered</span><b id="marketCount">0</b></div>
+      <div class="metric"><span class="muted">Live ticks received</span><b id="tickCount">0</b></div>
+      <div class="metric"><span class="muted">Latest last digit</span><b id="latestDigit">—</b></div>
+    </div>
+    <div class="feedline"><span>Latest market</span><span class="feedvalue" id="latestMarket">Waiting for feed…</span></div>
+    <div class="feedline"><span>Feed status</span><span class="feedvalue" id="feedStatus">Connecting…</span></div>
+    <div class="row" style="margin-top:14px"><button id="feedToggle" class="secondary">Stop scanning</button></div>
+    <p class="small warn">Tick data only: this feed does not yet reproduce Deriv’s red/green digit-bar percentages, so it cannot trigger trades. Scanning runs only while this page remains open.</p>
   </section>
   <section class="panel" id="strategyPanel">
     <div class="row" style="justify-content:space-between">
@@ -143,6 +160,41 @@ $("connect").addEventListener("click",()=>startLogin().catch(e=>$("status").text
 $("load").addEventListener("click",()=>loadSelectedAccount().catch(e=>$("accountStatus").textContent=e.message));
 $("disconnect").addEventListener("click",()=>{accessToken=null;expiresAt=0;$("accountPanel").hidden=true;$("disconnect").hidden=true;$("status").textContent="Disconnected";});
 (async()=>{try{if(location.pathname==="/callback") await handleCallback();}catch(e){$("status").textContent=e.message;history.replaceState({},"","/");}})();
+</script>
+<script type="module">
+import { connectVolatilityScanner } from "/market/volatility-scanner.js";
+let scanner = null;
+let ticks = 0;
+function setFeedStatus(value) {
+  $("feedStatus").textContent = value;
+  $("feedPill").textContent = value === "streaming" ? "LIVE" : value.toUpperCase().slice(0,18);
+}
+function startScanner() {
+  if (scanner) return;
+  setFeedStatus("connecting");
+  scanner = connectVolatilityScanner({
+    onStatus: setFeedStatus,
+    onSymbols(symbols) {
+      $("marketCount").textContent = String(symbols.length);
+      $("latestMarket").textContent = symbols.length ? "Subscribing to all " + symbols.length + " indices" : "No active indices found";
+    },
+    onTick(tick) {
+      ticks += 1;
+      $("tickCount").textContent = String(ticks);
+      $("latestMarket").textContent = tick.symbol;
+      $("latestDigit").textContent = String(tick.currentDigit);
+    }
+  });
+  $("feedToggle").textContent = "Stop scanning";
+}
+function stopScanner() {
+  scanner?.close();
+  scanner = null;
+  setFeedStatus("stopped");
+  $("feedToggle").textContent = "Start scanning";
+}
+$("feedToggle").addEventListener("click", () => scanner ? stopScanner() : startScanner());
+startScanner();
 </script>
 </body>
 </html>
