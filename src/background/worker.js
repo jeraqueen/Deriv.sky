@@ -156,7 +156,8 @@ export class MarketEngine extends DurableObject {
       this.state.latestMarket = msg.tick.symbol;
       this.state.latestDigit = digit;
       this.state.lastTickAt = new Date().toISOString();
-      await this.save();
+      // Keep hot tick updates in memory; persist snapshots on the minute
+      // heartbeat rather than writing to SQLite for every market tick.
     }
   }
 
