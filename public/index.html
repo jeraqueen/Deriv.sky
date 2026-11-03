@@ -361,7 +361,7 @@ async function loadSelectedAccount() {
   $("accountStatus").textContent = "Your USD demo account is connected. Press Start Board to begin.";
   updateAutoToggle();
   connectSignalStream();
-  $("tradeStatus").textContent = "Demo account loaded. Press Start Board when you are ready to begin.";
+  $("tradeStatus").textContent = "Demo account loaded. Board is stopped until you press Start Board.";
 }
 
 function updateAutoToggle() {
@@ -379,7 +379,7 @@ function connectSignalStream() {
   signalSocket = new WebSocket(scheme + "//" + location.host + "/api/scanner?action=stream");
   signalSocket.onopen = () => {
     signalReconnectDelay = 1000;
-    $("tradeStatus").textContent = "Real-time signal stream connected. Waiting for fresh DIFFER signals…";
+    if (autoDemoTradingEnabled) $("tradeStatus").textContent = "Live stream connected. Waiting for MATCHES or DIFFERS entries…";
   };
   signalSocket.onmessage = event => {
     if (event.data === "pong") return;
