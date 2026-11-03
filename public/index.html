@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#080d18">
+  <title>The Sky Bot</title>
+  <style>
+    :root{color-scheme:dark;font-family:Inter,system-ui,Arial,sans-serif;background:#080d18;color:#eef3ff}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 80% 0%,#142b4c 0,transparent 38%),#080d18}
+    main{width:min(920px,92vw);margin:0 auto;padding:42px 0 64px}.top{display:flex;align-items:center;gap:12px;margin-bottom:42px}
+    .logo{width:44px;height:44px;border-radius:14px;background:linear-gradient(135deg,#68d5ff,#6574ff);display:grid;place-items:center;color:#06101d;font-weight:900;font-size:22px}
+    h1{font-size:28px;margin:0}.sub{color:#9baac2;margin-top:4px;font-size:14px}
+    .panel{background:#111a2a;border:1px solid #26354b;border-radius:20px;padding:24px;margin:18px 0;box-shadow:0 18px 50px #0003}
+    h2{font-size:18px;margin:0 0 8px}.muted{color:#9baac2;font-size:14px;line-height:1.55}
+    button{border:0;border-radius:12px;padding:13px 18px;font-weight:750;background:#73d4ff;color:#071321;cursor:pointer;font-size:14px}
+    button.secondary{background:#26364d;color:#eaf2ff}button:disabled{opacity:.5;cursor:not-allowed}
+    .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.status{font-size:13px;color:#aab8ce;margin-top:14px;min-height:20px}
+    .pill{display:inline-block;border:1px solid #36506d;border-radius:99px;padding:5px 10px;font-size:11px;color:#8edcff;letter-spacing:.06em}
+    select{background:#0a1220;color:#fff;border:1px solid #354760;padding:12px;border-radius:10px;min-width:min(100%,340px)}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:18px}
+    .metric{background:#0b1422;border:1px solid #24354c;padding:16px;border-radius:14px}.metric b{display:block;font-size:20px;margin-top:6px}
+    .warn{color:#ffd28a}.small{font-size:12px;color:#8798b2;margin-top:18px}
+  </style>
+</head>
+<body>
+<main>
+  <div class="top"><div class="logo">S</div><div><h1>The Sky Bot</h1><div class="sub">Deriv trading assistant · Demo setup</div></div><span class="pill">DEMO FIRST</span></div>
+  <section class="panel">
+    <h2>Connect your Deriv account</h2>
+    <p class="muted">Sign in securely with Deriv and approve the requested trading permission. Your password stays with Deriv. This first build connects to your account; automated trading is not enabled.</p>
+    <div class="row"><button id="connect">Connect with Deriv</button><button id="disconnect" class="secondary" hidden>Disconnect</button></div>
+    <div id="status" class="status">Not connected</div>
+  </section>
+  <section class="panel" id="accountPanel" hidden>
+    <h2>Account overview</h2>
+    <p class="muted">Choose your virtual account to establish the authenticated demo connection.</p>
+    <div class="row"><select id="accounts"></select><button id="load" class="secondary">Load account</button></div>
+    <div class="grid">
+      <div class="metric"><span class="muted">Connection</span><b id="connection">Not connected</b></div>
+      <div class="metric"><span class="muted">Account type</span><b id="accountType">Demo</b></div>
+      <div class="metric"><span class="muted">Trading mode</span><b>Disabled</b></div>
+    </div>
+    <div id="accountStatus" class="status"></div>
+  </section>
+  <p class="small">Free-tier project. No subscription or paid trading service is included. Trading remains disabled until the strategy and risk controls are tested.</p>
+</main>
+<script>
+const APP_ID = "34QViCWtYpl4qov16nZy0";
+const AUTH_URL = "https://auth.deriv.com/oauth2/auth";
+const $ = id => document.getElementById(id);
+let accessToken = null;
+let expiresAt = 0;
+
+function b64url(bytes) {
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+}
+async function startLogin() {
+  const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
+  const challenge = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(verifier))));
+  const state = b64url(crypto.getRandomValues(new Uint8Array(18)));
+  sessionStorage.setItem("sky_verifier",verifier);
+  sessionStorage.setItem("sky_state",state);
+  const redirect = location.origin + "/callback";
+  const params = new URLSearchParams({response_type:"code",client_id:APP_ID,redirect_uri:redirect,scope:"trade",state,code_challenge:challenge,code_challenge_method:"S256"});
+  location.href = AUTH_URL + "?" + params.toString();
+}
+async function handleCallback() {
+  const params = new URLSearchParams(location.search);
+  const code = params.get("code");
+  if (!code) return false;
+  const state = params.get("state");
+  const savedState = sessionStorage.getItem("sky_state");
+  const verifier = sessionStorage.getItem("sky_verifier");
+  sessionStorage.removeItem("sky_state"); sessionStorage.removeItem("sky_verifier");
+  if (!state || state !== savedState || !verifier) throw new Error("Security check failed. Please reconnect.");
+  $("status").textContent = "Completing secure Deriv login…";
+  const response = await fetch("/api/oauth/token",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({code,code_verifier:verifier,redirect_uri:location.origin+"/callback"})});
+  const data = await response.json();
+  if (!response.ok || !data.ok) throw new Error(data.error || "Login failed.");
+  accessToken = data.access_token; expiresAt = Date.now() + Number(data.expires_in || 0)*1000;
+  history.replaceState({}, "", "/");
+  $("status").textContent = "Deriv authorization successful. Loading accounts…";
+  $("disconnect").hidden = false;
+  await loadAccounts();
+  return true;
+}
+async function api(path,method="GET") {
+  if (!accessToken || Date.now() >= expiresAt) throw new Error("Your Deriv session expired. Please reconnect.");
+  const response = await fetch(path,{method,headers:{authorization:"Bearer "+accessToken}});
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.errors?.[0]?.message || data.error || "Deriv request failed.");
+  return data;
+}
+async function loadAccounts() {
+  const data = await api("/api/accounts");
+  const accounts = data.data || data.accounts || [];
+  const demo = accounts.filter(a => String(a.account_type || a.type || "").toLowerCase().includes("demo") || String(a.account_category || "").toLowerCase().includes("demo"));
+  const choices = demo.length ? demo : accounts;
+  $("accounts").innerHTML = "";
+  choices.forEach(a => {
+    const option = document.createElement("option");
+    option.value = a.account_id || a.id;
+    option.textContent = (a.account_id || a.id) + " · " + (a.currency || "") + " · " + (a.account_type || a.type || "Account");
+    $("accounts").appendChild(option);
+  });
+  $("accountPanel").hidden = false;
+  $("status").textContent = choices.length ? "Connected to Deriv. Select your demo account." : "Connected, but no accounts were returned.";
+  $("connection").textContent = "Authorized";
+  $("accountType").textContent = "Demo";
+}
+async function loadSelectedAccount() {
+  const id = $("accounts").value;
+  if (!id) throw new Error("No demo account selected.");
+  const result = await api("/api/accounts/"+encodeURIComponent(id)+"/otp","POST");
+  const wsUrl = result.data?.url;
+  if (!wsUrl) throw new Error("Deriv did not return a WebSocket URL.");
+  const ws = new WebSocket(wsUrl);
+  $("accountStatus").textContent = "Opening secure demo connection…";
+  ws.onopen = () => { $("connection").textContent = "Connected"; $("accountStatus").textContent = "Secure demo WebSocket connected. Trading is still disabled."; ws.close(); };
+  ws.onerror = () => { $("accountStatus").textContent = "WebSocket connection failed. Please reconnect and try again."; };
+}
+$("connect").addEventListener("click",()=>startLogin().catch(e=>$("status").textContent=e.message));
+$("load").addEventListener("click",()=>loadSelectedAccount().catch(e=>$("accountStatus").textContent=e.message));
+$("disconnect").addEventListener("click",()=>{accessToken=null;expiresAt=0;$("accountPanel").hidden=true;$("disconnect").hidden=true;$("status").textContent="Disconnected";});
+(async()=>{try{if(location.pathname==="/callback") await handleCallback();}catch(e){$("status").textContent=e.message;history.replaceState({},"","/");}})();
+</script>
+</body>
+</html>
