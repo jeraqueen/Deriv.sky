@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { DiffersStrategy } from "./differs.js";
+import { evaluateMatchesStrategy } from "../strategies/matches.js";
 import { buildDigitHistogram, DIGIT_HISTORY_WINDOW } from "./digit-histogram.js";
 
 const DERIV_PUBLIC_WS = "wss://api.derivws.com/trading/v1/options/ws/public";
@@ -15,7 +16,8 @@ function lastDigit(tick) {
   const digits = quote.toFixed(tick.pip_size).replace(/\D/g, "");
   return digits.length ? Number(digits.at(-1)) : null;
 }
-const APPROVED_VOLATILITY_SYMBOLS = new Set(["1HZ10V","1HZ15V","1HZ25V","1HZ30V","1HZ50V","1HZ75V","1HZ90V","1HZ100V","R_10","R_25","R_50","R_75","R_100"]);
+const APPROVED_MARKET_ORDER = ["1HZ10V","1HZ15V","1HZ25V","1HZ30V","1HZ50V","1HZ75V","1HZ90V","1HZ100V","R_10","R_25","R_50","R_75","R_100"];
+const APPROVED_VOLATILITY_SYMBOLS = new Set(APPROVED_MARKET_ORDER);
 function symbolCode(item) {
   return String(item?.underlying_symbol || item?.symbol || "");
 }
@@ -44,7 +46,8 @@ export class MarketEngine extends DurableObject {
       strategyMode: "SIGNALS_FOR_AUTHENTICATED_DEMO_EXECUTION", strategyWindow: DIGIT_HISTORY_WINDOW,
       strategyReadyMarkets: 0, strategySignals: 0,
       strategyLastEvaluation: null, strategyLastSignal: null, strategyMarkets: [],
-      strategyPendingSignals: [], strategyLastExecution: null
+      strategyPendingSignals: [], strategyLastExecution: null,
+      rotationIndex: 0, rotationRound: 1, rotationByMarket: {}
     };
     this.ready = this.ctx.blockConcurrencyWhile(async () => {
       const saved = await this.ctx.storage.get("state");
@@ -110,10 +113,16 @@ export class MarketEngine extends DurableObject {
       let accepted = false;
       if (body.accepted === true) {
         if (!body.contractId) return Response.json({ ok: false, error: "Confirmed purchase acknowledgement requires a contract ID." }, { status: 400 });
-        accepted = this.differStrategy.recordAcceptedTrade(signal.market, signal.cycle, body.contractId);
-        if (!accepted) return Response.json({ ok: false, error: "Strategy cycle no longer accepts this trade." }, { status: 409 });
+        if (signal.strategy !== "MATCHES") {
+          accepted = this.differStrategy.recordAcceptedTrade(signal.market, signal.cycle, body.contractId);
+          if (!accepted) return Response.json({ ok: false, error: "DIFFER setup no longer accepts this trade." }, { status: 409 });
+        } else accepted = true;
+        const rotation = this.rotationStateFor(signal.market);
+        rotation.pending = false;
+        rotation.openContracts.push({ contractId:String(body.contractId), cycle:Number(signal.cycle), strategy:signal.strategy || "DIFFERS" });
       } else {
-        this.differStrategy.releasePending(signal.market, signal.cycle);
+        if (signal.strategy !== "MATCHES") this.differStrategy.releasePending(signal.market, signal.cycle);
+        this.rotationStateFor(signal.market).pending = false;
       }
       this.state.strategyPendingSignals = pending.filter(item => item.signalId !== signal.signalId);
       this.state.strategyLastExecution = { signalId: signal.signalId, market: signal.market, cycle: signal.cycle, accepted, detail: String(body.detail || "").slice(0, 240), timestamp: new Date().toISOString() };
@@ -129,18 +138,45 @@ export class MarketEngine extends DurableObject {
       if (!APPROVED_VOLATILITY_SYMBOLS.has(market) || !Number.isInteger(cycle) || !contractId || typeof body.won !== "boolean") {
         return Response.json({ ok: false, error: "Invalid market, cycle, contract ID, or result." }, { status: 400 });
       }
-      const result = this.differStrategy.recordContractResult(market, cycle, contractId, body.won);
-      if (!result.ok) return Response.json({ ok: false, error: "Contract result was already reported or is unknown." }, { status: 404 });
+      const rotation = this.rotationStateFor(market);
+      const openIndex = rotation.openContracts.findIndex(item => item.contractId === contractId);
+      if (openIndex < 0) return Response.json({ ok: false, error: "Contract result was already reported or is unknown." }, { status: 404 });
+      const [open] = rotation.openContracts.splice(openIndex, 1);
+      if (open.strategy !== "MATCHES") {
+        const differResult = this.differStrategy.recordContractResult(market, cycle, contractId, body.won);
+        if (!differResult.ok) return Response.json({ ok:false, error:"DIFFER contract result was not recognised." }, {status:404});
+      }
+      if (body.won) rotation.consecutiveWins += 1;
+      else rotation.consecutiveWins = 0;
+      const completed = rotation.consecutiveWins >= 2;
+      if (completed) {
+        this.state.rotationIndex = (Number(this.state.rotationIndex || 0) + 1) % APPROVED_MARKET_ORDER.length;
+        if (this.state.rotationIndex === 0) this.state.rotationRound = Number(this.state.rotationRound || 1) + 1;
+        rotation.consecutiveWins = 0;
+      }
       this.state.strategyLastExecution = { ...(this.state.strategyLastExecution || {}), market, cycle,
-        contractId, result: body.won ? "WIN" : "LOSS", wins: result.wins, losses: result.losses,
-        completed: result.completed === true, timestamp: new Date().toISOString() };
+        contractId, strategy:open.strategy, result: body.won ? "WIN" : "LOSS",
+        consecutiveWins: completed ? 2 : rotation.consecutiveWins, completed,
+        nextMarket: this.activeRotationMarket(), timestamp: new Date().toISOString() };
       await this.save();
-      return Response.json({ ok: true, ...result });
+      return Response.json({ ok:true, wins:rotation.consecutiveWins, consecutiveWins:rotation.consecutiveWins,
+        losses:rotation.losses || 0, completed, nextMarket:this.activeRotationMarket() });
     }
     if (url.pathname === "/status") {
       return Response.json({ ok: true, ...this.state, uptimeMode: "Cloudflare Durable Object background feed" });
     }
     return Response.json({ ok: false, error: "Use /start, /ensure, /status or /stop" }, { status: 404 });
+  }
+
+  rotationStateFor(market) {
+    this.state.rotationByMarket ||= {};
+    if (!this.state.rotationByMarket[market]) this.state.rotationByMarket[market] = { consecutiveWins:0, losses:0, pending:false, openContracts:[] };
+    const item=this.state.rotationByMarket[market]; item.consecutiveWins ||= 0; item.openContracts ||= []; item.pending ||= false;
+    return item;
+  }
+
+  activeRotationMarket() {
+    return APPROVED_MARKET_ORDER[Number(this.state.rotationIndex || 0) % APPROVED_MARKET_ORDER.length];
   }
 
   async save() {
@@ -296,13 +332,17 @@ export class MarketEngine extends DurableObject {
       history.push(digit);
       if (history.length > DIGIT_HISTORY_WINDOW) history.shift();
       this.digitHistory.set(market, history);
+      // Build history for every market, but only evaluate/enter on the current
+      // rotation market. Two consecutive wins move the board to the next market.
+      if (market !== this.activeRotationMarket()) { if (pendingQueueChanged) await this.save(); return; }
+      const rotation = this.rotationStateFor(market);
+      if (rotation.pending || rotation.openContracts.length) { if (pendingQueueChanged) await this.save(); return; }
 
       if (history.length >= DIGIT_HISTORY_WINDOW) {
         const histogram = buildDigitHistogram(history);
         const tickId = ++this.tickSequence;
-        const evaluation = this.differStrategy.observe({
-          market, bars: histogram.bars, currentDigit: digit, tickId
-        });
+        const evaluation = this.differStrategy.observe({ market, bars: histogram.bars, currentDigit: digit, tickId });
+        const matchesEvaluation = evaluateMatchesStrategy({ counts:histogram.counts, currentDigit:digit, tickId });
         if (evaluation.action !== "PENDING") {
           const removedSignals = this.state.strategyPendingSignals.filter(item => item.market === market);
           this.state.strategyPendingSignals = this.state.strategyPendingSignals.filter(item => item.market !== market);
@@ -335,20 +375,27 @@ export class MarketEngine extends DurableObject {
           openContracts: this.differStrategy.stateFor(market).openContracts.length
         };
 
-        if (evaluation.action === "BUY_INTENT") {
+        const chosen = evaluation.action === "BUY_INTENT"
+          ? { ...evaluation, strategy:"DIFFERS", cycle:evaluation.cycle }
+          : matchesEvaluation.action === "BUY_INTENT"
+            ? { ...matchesEvaluation, strategy:"MATCHES", cycle:Number(this.state.rotationRound || 1) }
+            : null;
+        if (chosen) {
           const timestamp = new Date().toISOString();
-          const signalId = market + ":" + evaluation.cycle + ":" + tickId;
-          const signal = { signalId, market, barrier: evaluation.barrier, contractType: evaluation.contractType, duration: evaluation.duration, durationUnit: evaluation.durationUnit, cycle: evaluation.cycle, timestamp, orderPlaced: false };
+          const signalId = market + ":" + chosen.strategy + ":" + chosen.cycle + ":" + tickId;
+          const signal = { signalId, strategy:chosen.strategy, market, barrier:chosen.barrier, contractType:chosen.contractType, duration:chosen.duration, durationUnit:chosen.durationUnit, cycle:chosen.cycle, timestamp, orderPlaced: false };
           this.state.strategySignals += 1;
           this.state.strategyPendingSignals.push(signal);
           this.state.strategyPendingSignals = this.state.strategyPendingSignals.slice(-13);
+          rotation.pending = true;
           pendingQueueChanged = true;
           diagnostic.action = "PENDING_DEMO_SIGNAL";
-          diagnostic.reason = "Valid DIFFER trigger queued for authenticated demo execution.";
+          diagnostic.reason = "Valid " + chosen.strategy + " trigger queued for authenticated demo execution.";
           diagnostic.barrier = evaluation.barrier;
-          diagnostic.contractType = evaluation.contractType;
-          diagnostic.duration = evaluation.duration;
-          diagnostic.durationUnit = evaluation.durationUnit;
+          diagnostic.strategy = chosen.strategy;
+          diagnostic.contractType = chosen.contractType;
+          diagnostic.duration = chosen.duration;
+          diagnostic.durationUnit = chosen.durationUnit;
           diagnostic.signalId = signalId;
           diagnostic.simulatedTradesThisCycle = this.differStrategy.stateFor(market).trades;
           this.state.strategyLastSignal = signal;
