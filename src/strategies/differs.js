@@ -44,7 +44,12 @@ export class DiffersStrategy {
         pendingAt: null
       });
     }
-    return this.markets.get(market);
+    const state = this.markets.get(market);
+    // Migrate persisted cycles created before win-based rotation was introduced.
+    state.wins ??= 0;
+    state.losses ??= 0;
+    state.openContracts ??= [];
+    return state;
   }
 
   observe({ market, bars, currentDigit, tickId, nowMs = Date.now() }) {
