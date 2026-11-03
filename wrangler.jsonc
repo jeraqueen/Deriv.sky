@@ -1,14 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "the-sky-bot",
-  "main": "src/worker.js",
   "compatibility_date": "2026-11-03",
-  "assets": {
-    "directory": "./public",
-    "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
-  },
-  "vars": {
-    "DERIV_APP_ID": "34QViCWtYpl4qov16nZy0"
-  }
+  "pages_build_output_dir": "./public"
 }
