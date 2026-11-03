@@ -186,6 +186,28 @@ function updateContractResult(contract) {
   if (contract.profit !== undefined && contract.profit !== null) record.profit = Number(contract.profit);
   if (contract.sell_price !== undefined) record.sellPrice = Number(contract.sell_price);
   saveContractRecords();
+  if (record.isSold && !record.strategyResultReported && record.market && Number.isInteger(Number(record.cycle))) {
+    reportSettledStrategyResult(record).catch(() => {});
+  }
+}
+async function reportSettledStrategyResult(record) {
+  if (!record || record.strategyResultReported || !record.isSold || !record.market || !Number.isInteger(Number(record.cycle))) return;
+  const response = await fetch("/api/scanner?action=result", {
+    method:"POST", headers:{"content-type":"application/json"},
+    body:JSON.stringify({contractId:String(record.contractId),market:record.market,cycle:Number(record.cycle),won:Number(record.profit) > 0})
+  });
+  const data = await response.json();
+  if (response.ok && data.ok) {
+    record.strategyResultReported = true;
+    record.marketWins = data.wins;
+    record.marketLosses = data.losses;
+    record.marketCycleCompleted = data.completed === true;
+    saveContractRecords();
+    if (data.completed) $("tradeStatus").textContent = record.market + " completed three wins in this setup. The bot is rotating to other qualifying markets.";
+  } else if (response.status === 404) {
+    record.strategyResultReported = true;
+    saveContractRecords();
+  }
 }
 function persistSession() {
   if (accessToken && expiresAt > Date.now()) {
@@ -388,10 +410,10 @@ function rememberSignal(signalId) {
   while (processedSignalIds.size > 250) processedSignalIds.delete(processedSignalIds.values().next().value);
   localStorage.setItem("sky_auto_processed_signals", JSON.stringify(Array.from(processedSignalIds)));
 }
-async function acknowledgeSignal(signal, accepted, detail) {
+async function acknowledgeSignal(signal, accepted, detail, contractId) {
   const response = await fetch("/api/scanner?action=ack", {
     method:"POST", headers:{"content-type":"application/json"},
-    body:JSON.stringify({signalId:signal.signalId,market:signal.market,cycle:signal.cycle,accepted,detail})
+    body:JSON.stringify({signalId:signal.signalId,market:signal.market,cycle:signal.cycle,accepted,detail,contractId:contractId ? String(contractId) : undefined})
   });
   const data = await response.json();
   if (!response.ok || !data.ok) throw new Error(data.error || "Could not acknowledge the signal.");
@@ -458,14 +480,14 @@ async function executeAutomaticSignal(signal) {
     addConfirmedContract({
       contractId:String(bought.contract_id), market:signal.market, barrier:signal.barrier,
       timestamp:bought.purchase_time ? new Date(Number(bought.purchase_time) * 1000).toISOString() : new Date().toISOString(),
-      stake:1, currency:"USD",
+      stake:1, currency:"USD", cycle:Number(signal.cycle),
       signalDetectedAt:signal.timestamp,
       signalReceivedAt:new Date(receivedAt).toISOString(),
       proposalMs:proposalReceivedAt - proposalRequestedAt,
       buyMs:buyConfirmedAt - buySentAt,
       totalExecutionMs:buyConfirmedAt - receivedAt
     });
-    await acknowledgeSignal(signal, true, "Deriv confirmed contract " + bought.contract_id);
+    await acknowledgeSignal(signal, true, "Deriv confirmed contract " + bought.contract_id, bought.contract_id);
     $("tradeStatus").textContent = "DEMO CONTRACT PLACED · " + signal.market + " · DIFFER " + signal.barrier + " · 1 tick · Contract ID " + bought.contract_id;
     await wsRequest({proposal_open_contract:1, contract_id:bought.contract_id, subscribe:1});
   } catch (error) {
