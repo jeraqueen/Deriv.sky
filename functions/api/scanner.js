@@ -10,7 +10,7 @@ export async function onRequest({ request, env }) {
     if (request.method !== "GET" || request.headers.get("Upgrade") !== "websocket") return new Response("WebSocket upgrade required.", { status: 426 });
     const id = env.MARKET_ENGINE.idFromName("sky-bot-volatility-scanner");
     const stub = env.MARKET_ENGINE.get(id);
-    return stub.fetch(new Request("https://engine/stream", { method: "GET", headers: request.headers }));
+    return stub.fetch(request);
   }
   if (action !== "status" && action !== "test" && request.method !== "POST") {
     return Response.json({ ok: false, error: "POST is required for this action." }, { status: 405 });
