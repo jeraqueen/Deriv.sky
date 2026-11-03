@@ -6,11 +6,18 @@
  */
 export const PUBLIC_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
 
+export function marketSymbol(item) {
+  return String(item?.underlying_symbol || item?.symbol || "");
+}
+
 export function isVolatilityIndex(item) {
-  const identity = [item?.display_name, item?.name, item?.symbol].filter(Boolean).join(" ");
+  // Support both current Deriv API fields and legacy field names.
+  const symbol = marketSymbol(item);
+  const identity = [item?.underlying_symbol_name, item?.display_name, item?.name, symbol]
+    .filter(Boolean).join(" ");
   return /volatility/i.test(identity) ||
-    /^(?:1HZ)?(?:10|15|25|30|50|75|90|100)V$/i.test(String(item?.symbol || "")) ||
-    /^R_(?:10|25|50|75|100)$/i.test(String(item?.symbol || ""));
+    /^(?:1HZ)?(?:10|15|25|30|50|75|90|100)V$/i.test(symbol) ||
+    /^R_(?:10|25|50|75|100)$/i.test(symbol);
 }
 
 export function lastDigitFromTick(tick) {
@@ -55,17 +62,17 @@ export function connectVolatilityScanner(handlers = {}) {
       }
       // Keep each request comfortably below the API's per-request limits.
       for (let i = 0; i < symbols.length; i += 50) {
-        const batch = symbols.slice(i, i + 50).map(item => item.symbol);
+        const batch = symbols.slice(i, i + 50).map(marketSymbol).filter(Boolean);
         socket.send(JSON.stringify({ ticks: batch, subscribe: 1, req_id: 100 + i }));
       }
       handlers.onStatus?.("streaming");
       return;
     }
 
-    if (message.msg_type === "tick" && message.tick?.symbol) {
+    if (message.msg_type === "tick" && (message.tick?.symbol || message.tick?.underlying_symbol)) {
       const digit = lastDigitFromTick(message.tick);
       if (digit === null) return;
-      const symbol = message.tick.symbol;
+      const symbol = message.tick.symbol || message.tick.underlying_symbol;
       const history = recentDigits.get(symbol) || [];
       history.push(digit);
       if (history.length > 100) history.shift();
