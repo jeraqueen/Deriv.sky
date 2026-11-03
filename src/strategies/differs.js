@@ -162,7 +162,7 @@ export class DiffersStrategy {
       return { action: "PENDING", market, cycle: s.cycle, reason: "A DIFFER signal is awaiting a demo execution acknowledgement." };
     }
 
-    if (s.openContracts.some(item => item.cycle === s.cycle)) {
+    if (s.openContracts.length > 0) {
       return { action: "WAIT_SETTLEMENT", market, cycle: s.cycle,
         wins: s.wins, trades: s.trades,
         reason: "A contract in this market setup is still open; wait for its result before the next entry." };
