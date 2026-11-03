@@ -7,7 +7,10 @@
 export const PUBLIC_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
 
 export function isVolatilityIndex(item) {
-  return /volatility/i.test(String(item?.display_name || item?.name || ""));
+  const identity = [item?.display_name, item?.name, item?.symbol].filter(Boolean).join(" ");
+  return /volatility/i.test(identity) ||
+    /^(?:1HZ)?(?:10|15|25|30|50|75|90|100)V$/i.test(String(item?.symbol || "")) ||
+    /^R_(?:10|25|50|75|100)$/i.test(String(item?.symbol || ""));
 }
 
 export function lastDigitFromTick(tick) {
