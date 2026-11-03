@@ -1,0 +1,180 @@
+import { DurableObject } from "cloudflare:workers";
+
+const DERIV_PUBLIC_WS = "wss://api.derivws.com/trading/v1/options/ws/public";
+const RECONNECT_MS = 5000;
+const HEARTBEAT_MS = 60_000;
+
+function lastDigit(tick) {
+  if (!tick || tick.quote === undefined || !Number.isInteger(tick.pip_size) ||
+      tick.pip_size < 0 || tick.pip_size > 10) return null;
+  const quote = Number(tick.quote);
+  if (!Number.isFinite(quote)) return null;
+  const digits = quote.toFixed(tick.pip_size).replace(/\D/g, "");
+  return digits.length ? Number(digits.at(-1)) : null;
+}
+function isVolatility(item) {
+  const label = String(item?.display_name || item?.name || "");
+  return /volatility/i.test(label) && /index/i.test(label);
+}
+
+export class MarketEngine extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.socket = null;
+    this.connecting = false;
+    this.state = {
+      running: false, status: "starting", markets: 0, ticks: 0,
+      latestMarket: null, latestDigit: null, lastTickAt: null,
+      connectedAt: null, lastError: null
+    };
+    this.ready = this.ctx.blockConcurrencyWhile(async () => {
+      const saved = await this.ctx.storage.get("state");
+      if (saved) this.state = { ...this.state, ...saved };
+    });
+  }
+
+  async fetch(request) {
+    await this.ready;
+    const url = new URL(request.url);
+    if (url.pathname === "/start" || url.pathname === "/ensure") {
+      await this.start();
+      return Response.json({ ok: true, ...this.state });
+    }
+    if (url.pathname === "/stop") {
+      await this.stop();
+      return Response.json({ ok: true, ...this.state });
+    }
+    if (url.pathname === "/status") {
+      return Response.json({ ok: true, ...this.state, uptimeMode: "Cloudflare Durable Object background feed" });
+    }
+    return Response.json({ ok: false, error: "Use /start, /ensure, /status or /stop" }, { status: 404 });
+  }
+
+  async save() {
+    await this.ctx.storage.put("state", this.state);
+  }
+
+  async start() {
+    this.state.running = true;
+    if (!this.socket && !this.connecting) this.connect();
+    await this.ctx.storage.setAlarm(Date.now() + HEARTBEAT_MS);
+    await this.save();
+  }
+
+  async stop() {
+    this.state.running = false;
+    this.state.status = "stopped";
+    if (this.socket) {
+      try { this.socket.close(1000, "Scanner stopped"); } catch {}
+      this.socket = null;
+    }
+    await this.ctx.storage.deleteAlarm();
+    await this.save();
+  }
+
+  connect() {
+    if (!this.state.running || this.connecting || this.socket) return;
+    this.connecting = true;
+    this.state.status = "connecting";
+    let ws;
+    try {
+      ws = new WebSocket(DERIV_PUBLIC_WS);
+    } catch (error) {
+      this.connecting = false;
+      this.failed(error);
+      return;
+    }
+    this.socket = ws;
+    ws.addEventListener("open", () => {
+      this.connecting = false;
+      if (!this.state.running) { ws.close(); return; }
+      this.state.status = "connected";
+      this.state.connectedAt = new Date().toISOString();
+      this.state.lastError = null;
+      ws.send(JSON.stringify({ active_symbols: "brief", req_id: 1 }));
+      this.save();
+    });
+    ws.addEventListener("message", event => {
+      this.onMessage(event.data).catch(error => this.failed(error));
+    });
+    ws.addEventListener("error", () => this.failed(new Error("Deriv WebSocket error")));
+    ws.addEventListener("close", () => {
+      if (this.socket === ws) this.socket = null;
+      this.connecting = false;
+      if (this.state.running) {
+        this.state.status = "reconnecting";
+        this.scheduleReconnect();
+      }
+      this.save();
+    });
+  }
+
+  async onMessage(raw) {
+    let msg;
+    try { msg = JSON.parse(raw); } catch { return; }
+    if (msg.error) {
+      this.state.lastError = msg.error.message || "Deriv API error";
+      await this.save();
+      return;
+    }
+    if (msg.msg_type === "active_symbols") {
+      const markets = (msg.active_symbols || []).filter(isVolatility);
+      this.state.markets = markets.length;
+      this.state.status = markets.length ? "streaming" : "no-volatility-markets";
+      if (this.socket?.readyState === WebSocket.OPEN) {
+        for (const item of markets) {
+          this.socket.send(JSON.stringify({ ticks: item.symbol, subscribe: 1 }));
+        }
+      }
+      await this.save();
+      return;
+    }
+    if (msg.msg_type === "tick" && msg.tick?.symbol) {
+      const digit = lastDigit(msg.tick);
+      if (digit === null) return;
+      this.state.ticks += 1;
+      this.state.latestMarket = msg.tick.symbol;
+      this.state.latestDigit = digit;
+      this.state.lastTickAt = new Date().toISOString();
+      await this.save();
+    }
+  }
+
+  async failed(error) {
+    this.state.lastError = String(error?.message || error);
+    if (this.state.running) {
+      this.state.status = "reconnecting";
+      await this.scheduleReconnect();
+    }
+    await this.save();
+  }
+
+  async scheduleReconnect() {
+    await this.ctx.storage.setAlarm(Date.now() + RECONNECT_MS);
+  }
+
+  async alarm() {
+    await this.ready;
+    if (!this.state.running) return;
+    if (!this.socket && !this.connecting) this.connect();
+    await this.ctx.storage.setAlarm(Date.now() + HEARTBEAT_MS);
+  }
+}
+
+async function engine(env) {
+  const id = env.MARKET_ENGINE.idFromName("sky-bot-volatility-scanner");
+  return env.MARKET_ENGINE.get(id);
+}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const stub = await engine(env);
+    const path = ["/start", "/stop", "/status", "/ensure"].includes(url.pathname) ? url.pathname : "/status";
+    return stub.fetch("https://engine" + path);
+  },
+  async scheduled(_event, env, ctx) {
+    const stub = await engine(env);
+    ctx.waitUntil(stub.fetch("https://engine/ensure"));
+  }
+};
