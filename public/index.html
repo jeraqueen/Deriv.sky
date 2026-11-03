@@ -26,14 +26,21 @@
     .contract-list{display:grid;gap:9px;margin-top:14px}.contract-item{background:#0b1422;border:1px solid #24354c;border-radius:12px;padding:12px}
     .contract-head{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:13px;font-weight:750}
     .contract-meta{font-size:12px;color:#9baac2;margin-top:6px;line-height:1.5}.positive{color:#6fe0a0!important}.negative{color:#ff8d8d!important}.empty-state{color:#8798b2;font-size:13px;padding:12px 0}
+    .start-board-button{background:linear-gradient(135deg,#62e6ad,#37c98b);color:#041a12;min-width:180px;box-shadow:0 8px 28px #37c98b35;font-size:15px;padding:15px 24px}
+    .start-board-button:hover{filter:brightness(1.07);transform:translateY(-1px)}
+    #marketPanel,#strategyPanel,main>p.small{display:none!important}
+    main{width:min(1080px,94vw);padding-top:30px}.top{margin-bottom:28px}.panel{padding:22px}
+    #accountPanel{border-color:#31506a}.metric{min-height:82px}
+    #contractList{max-height:560px;overflow:auto}
+    @media(max-width:600px){main{padding-top:20px}.panel{padding:17px;border-radius:16px}.top{margin-bottom:20px}h1{font-size:24px}}
   </style>
 </head>
 <body>
 <main>
-  <div class="top"><div class="logo">S</div><div><h1>The Sky Bot</h1><div class="sub">Deriv trading assistant · Demo setup</div></div><span class="pill">DEMO FIRST</span></div>
+  <div class="top"><div class="logo">S</div><div><h1>The Sky Bot</h1><div class="sub">Volatility markets · Automated demo trading</div></div><span class="pill">DEMO MODE ONLY</span></div>
   <section class="panel">
     <h2>Connect your Deriv account</h2>
-    <p class="muted">Sign in securely with Deriv and approve the requested trading permission. Your password stays with Deriv. Automated contracts are restricted to your verified USD demo account; real accounts are blocked.</p>
+    <p class="muted">Securely connect your Deriv account. The board accepts verified USD demo accounts only; real accounts cannot be used.</p>
     <div class="row"><button id="connect">Connect with Deriv</button><button id="disconnect" class="secondary" hidden>Disconnect</button></div>
     <div id="status" class="status">Not connected</div>
   </section>
@@ -48,13 +55,13 @@
     </div>
     <div id="accountStatus" class="status"></div>
     <div class="row" style="margin-top:14px">
-      <button id="autoToggle">Pause automatic trading</button>
+      <button id="autoToggle" class="start-board-button">▶ Start Board</button>
     </div>
-    <p class="small warn">Automatic mode: DEMO account only · USD $1 stake · maximum 3 confirmed contracts per market/setup cycle · fresh signals only. Keep this page open and connected for automatic execution.</p>
+    <p class="small">Board execution is demo-only. Each qualifying strategy signal uses a $1 USD stake.</p>
     <div id="tradeStatus" class="status">Connect and load your verified USD demo account to start automatic execution.</div>
     <div style="margin-top:22px">
-      <h2>Live contract board</h2>
-      <p class="muted">Confirmed demo contracts and settled results. Results are saved on this device.</p>
+      <div class="row" style="justify-content:space-between"><h2>Live Contract Board</h2><span class="pill" id="boardState">BOARD STOPPED</span></div>
+      <p class="muted">Live positions and completed demo trades.</p>
       <div class="grid">
         <div class="metric"><span class="muted">Contracts</span><b id="statContracts">0</b></div>
         <div class="metric"><span class="muted">Wins</span><b id="statWins" class="positive">0</b></div>
@@ -109,7 +116,7 @@ let selectedDemoAccount = null;
 let tradeSocket = null;
 let wsRequestId = 100;
 let pendingWsRequests = new Map();
-let autoDemoTradingEnabled = localStorage.getItem("sky_auto_demo_enabled") !== "0";
+let autoDemoTradingEnabled = false; // Trading starts only after the user presses Start Board.
 let activeExecutionMarkets = new Set();
 let strategyResultReportsInFlight = new Set();
 let autoStatusBusy = false;
@@ -362,8 +369,9 @@ async function loadSelectedAccount() {
 function updateAutoToggle() {
   const button = $("autoToggle");
   if (!button) return;
-  button.textContent = autoDemoTradingEnabled ? "Pause automatic trading" : "Resume automatic trading";
-  $("tradingMode").textContent = autoDemoTradingEnabled ? "AUTO DEMO ON" : "PAUSED";
+  button.textContent = autoDemoTradingEnabled ? "■ Stop Board" : "▶ Start Board";
+  $("tradingMode").textContent = autoDemoTradingEnabled ? "BOARD RUNNING" : "BOARD STOPPED";
+  const boardState = $("boardState"); if (boardState) { boardState.textContent = autoDemoTradingEnabled ? "BOARD RUNNING" : "BOARD STOPPED"; boardState.style.color = autoDemoTradingEnabled ? "#6fe0a0" : "#9baac2"; }
 }
 function connectSignalStream() {
   if (!selectedDemoAccount || selectedDemoAccount.accountType !== "demo" ||
@@ -557,10 +565,21 @@ $("autoToggle").addEventListener("click", () => {
   autoDemoTradingEnabled = !autoDemoTradingEnabled;
   localStorage.setItem("sky_auto_demo_enabled", autoDemoTradingEnabled ? "1" : "0");
   updateAutoToggle();
-  $("tradeStatus").textContent = autoDemoTradingEnabled
-    ? "Automatic $1 USD DEMO trading resumed."
-    : "Automatic trading paused. The background scanner continues running.";
-  if (autoDemoTradingEnabled) { monitorAutomaticTrading(); drainAutomaticQueue(); }
+  if (autoDemoTradingEnabled) {
+    if (!selectedDemoAccount || selectedDemoAccount.accountType !== "demo" || selectedDemoAccount.currency !== "USD" || !tradeSocket || tradeSocket.readyState !== WebSocket.OPEN) {
+      autoDemoTradingEnabled = false; updateAutoToggle(); $("tradeStatus").textContent = "Load a verified USD demo account before starting the board."; return;
+    }
+    scannerAction("start").then(() => {
+      localStorage.setItem("sky_auto_demo_enabled","1");
+      $("tradeStatus").textContent = "Board started. Scanning markets and waiting for valid strategy entries…";
+      connectSignalStream(); monitorAutomaticTrading(); drainAutomaticQueue();
+    }).catch(error => { autoDemoTradingEnabled = false; updateAutoToggle(); $("tradeStatus").textContent = "Could not start board: " + error.message; });
+  } else {
+    localStorage.setItem("sky_auto_demo_enabled","0");
+    scannerAction("stop").catch(() => {});
+    executionQueue = []; queuedSignalIds.clear();
+    $("tradeStatus").textContent = "Board stopped. Existing open demo contracts will still be monitored."; 
+  }
 });
 
 $("connect").addEventListener("click",()=>startLogin().catch(e=>$("status").textContent=e.message));
