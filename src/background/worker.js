@@ -43,7 +43,8 @@ export class MarketEngine extends DurableObject {
       tickSubscriptionAckAt: null, tickSubscriptionCount: 0,
       strategyMode: "DRY_RUN_NO_ORDERS", strategyWindow: DIGIT_HISTORY_WINDOW,
       strategyReadyMarkets: 0, strategySignals: 0,
-      strategyLastEvaluation: null, strategyLastSignal: null, strategyMarkets: []
+      strategyLastEvaluation: null, strategyLastSignal: null, strategyMarkets: [],
+      strategyPendingSignals: [], strategyLastExecution: null
     };
     this.ready = this.ctx.blockConcurrencyWhile(async () => {
       const saved = await this.ctx.storage.get("state");
@@ -79,6 +80,26 @@ export class MarketEngine extends DurableObject {
           ? "Deriv returned live market ticks to the background service."
           : "No new tick arrived during the 8-second test window. Check feed status and retry."
       }, { status: receivedNewTick ? 200 : 503 });
+    }
+    if (url.pathname === "/ack" && request.method === "POST") {
+      let body;
+      try { body = await request.json(); } catch { return Response.json({ ok: false, error: "Invalid acknowledgement body." }, { status: 400 }); }
+      const pending = this.state.strategyPendingSignals || [];
+      const index = pending.findIndex(item => item.signalId === body.signalId);
+      if (index < 0) return Response.json({ ok: false, error: "Signal is no longer pending or has expired." }, { status: 404 });
+      const signal = pending[index];
+      if (body.market !== signal.market || Number(body.cycle) !== Number(signal.cycle)) return Response.json({ ok: false, error: "Signal acknowledgement did not match the pending signal." }, { status: 400 });
+      let accepted = false;
+      if (body.accepted === true) {
+        accepted = this.differStrategy.recordAcceptedTrade(signal.market, signal.cycle);
+        if (!accepted) return Response.json({ ok: false, error: "Strategy cycle no longer accepts this trade." }, { status: 409 });
+      } else {
+        this.differStrategy.releasePending(signal.market, signal.cycle);
+      }
+      this.state.strategyPendingSignals = pending.filter(item => item.signalId !== signal.signalId);
+      this.state.strategyLastExecution = { signalId: signal.signalId, market: signal.market, cycle: signal.cycle, accepted, detail: String(body.detail || "").slice(0, 240), timestamp: new Date().toISOString() };
+      await this.save();
+      return Response.json({ ok: true, accepted, pending: this.state.strategyPendingSignals.length, execution: this.state.strategyLastExecution });
     }
     if (url.pathname === "/status") {
       return Response.json({ ok: true, ...this.state, uptimeMode: "Cloudflare Durable Object background feed" });
@@ -196,6 +217,11 @@ export class MarketEngine extends DurableObject {
       return;
     }
     if (msg.msg_type === "tick" && (msg.tick?.symbol || msg.tick?.underlying_symbol)) {
+      const now = Date.now();
+      const pendingSignals = this.state.strategyPendingSignals || [];
+      const expiredSignals = pendingSignals.filter(item => now - Date.parse(item.timestamp) > 10000);
+      for (const item of expiredSignals) this.differStrategy.releasePending(item.market, item.cycle);
+      this.state.strategyPendingSignals = pendingSignals.filter(item => now - Date.parse(item.timestamp) <= 10000);
       const digit = lastDigit(msg.tick);
       if (digit === null) return;
       const market = msg.tick.symbol || msg.tick.underlying_symbol;
@@ -239,26 +265,21 @@ export class MarketEngine extends DurableObject {
         };
 
         if (evaluation.action === "BUY_INTENT") {
-          const simulated = this.differStrategy.recordAcceptedTrade(market, evaluation.cycle);
-          if (simulated) {
-            this.state.strategySignals += 1;
-            diagnostic.action = "DRY_RUN_SIGNAL";
-            diagnostic.reason = "Valid one-tick DIFFER signal detected. Simulated only; no order was sent.";
-            diagnostic.barrier = evaluation.barrier;
-            diagnostic.contractType = evaluation.contractType;
-            diagnostic.duration = evaluation.duration;
-            diagnostic.durationUnit = evaluation.durationUnit;
-            diagnostic.simulatedTradesThisCycle = this.differStrategy.stateFor(market).trades;
-            this.state.strategyLastSignal = {
-              market, barrier: evaluation.barrier, contractType: evaluation.contractType,
-              duration: evaluation.duration, durationUnit: evaluation.durationUnit,
-              cycle: evaluation.cycle, simulatedTradeNumber: diagnostic.simulatedTradesThisCycle,
-              timestamp: new Date().toISOString(), orderPlaced: false
-            };
-          } else {
-            diagnostic.action = "DRY_RUN_REJECTED";
-            diagnostic.reason = "Strategy cycle limit or state check rejected the simulated signal.";
-          }
+          const timestamp = new Date().toISOString();
+          const signalId = market + ":" + evaluation.cycle + ":" + tickId;
+          const signal = { signalId, market, barrier: evaluation.barrier, contractType: evaluation.contractType, duration: evaluation.duration, durationUnit: evaluation.durationUnit, cycle: evaluation.cycle, timestamp, orderPlaced: false };
+          this.state.strategySignals += 1;
+          this.state.strategyPendingSignals.push(signal);
+          this.state.strategyPendingSignals = this.state.strategyPendingSignals.slice(-13);
+          diagnostic.action = "PENDING_DEMO_SIGNAL";
+          diagnostic.reason = "Valid DIFFER trigger queued for authenticated demo execution.";
+          diagnostic.barrier = evaluation.barrier;
+          diagnostic.contractType = evaluation.contractType;
+          diagnostic.duration = evaluation.duration;
+          diagnostic.durationUnit = evaluation.durationUnit;
+          diagnostic.signalId = signalId;
+          diagnostic.simulatedTradesThisCycle = this.differStrategy.stateFor(market).trades;
+          this.state.strategyLastSignal = signal;
         }
 
         this.marketDiagnostics.set(market, diagnostic);
@@ -314,7 +335,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const stub = await engine(env);
-    const path = ["/start", "/stop", "/status", "/ensure", "/test"].includes(url.pathname) ? url.pathname : "/status";
+    const path = ["/start", "/stop", "/status", "/ensure", "/test", "/ack"].includes(url.pathname) ? url.pathname : "/status";
     return stub.fetch("https://engine" + path);
   },
   async scheduled(_event, env, ctx) {
