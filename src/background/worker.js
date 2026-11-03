@@ -309,7 +309,10 @@ export class MarketEngine extends DurableObject {
       const now = Date.now();
       const pendingSignals = this.state.strategyPendingSignals || [];
       const expiredSignals = pendingSignals.filter(item => now - Date.parse(item.timestamp) > 10000);
-      for (const item of expiredSignals) this.differStrategy.releasePending(item.market, item.cycle);
+      for (const item of expiredSignals) {
+        if (item.strategy !== "MATCHES") this.differStrategy.releasePending(item.market, item.cycle);
+        this.rotationStateFor(item.market).pending = false;
+      }
       this.state.strategyPendingSignals = pendingSignals.filter(item => now - Date.parse(item.timestamp) <= 10000);
       let pendingQueueChanged = expiredSignals.length > 0;
       const realtimeEvents = expiredSignals.map(item => ({
@@ -347,6 +350,7 @@ export class MarketEngine extends DurableObject {
           const removedSignals = this.state.strategyPendingSignals.filter(item => item.market === market);
           this.state.strategyPendingSignals = this.state.strategyPendingSignals.filter(item => item.market !== market);
           if (removedSignals.length) {
+            this.rotationStateFor(market).pending = false;
             pendingQueueChanged = true;
             for (const item of removedSignals) realtimeEvents.push({
               type: "signal_invalidated", signalId: item.signalId, market,
