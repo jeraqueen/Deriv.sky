@@ -36,7 +36,8 @@ export class MarketEngine extends DurableObject {
       latestMarket: null, latestDigit: null, lastTickAt: null,
       connectedAt: null, lastError: null, lastMessageType: null,
       activeSymbolsReceived: false, rawSymbolCount: 0, matchedSymbolCount: 0,
-      sampleSymbolNames: []
+      sampleSymbolNames: [], sampleSymbolKeys: [], sampleSymbolPreview: null,
+      lastCloseCode: null, lastCloseReason: null
     };
     this.ready = this.ctx.blockConcurrencyWhile(async () => {
       const saved = await this.ctx.storage.get("state");
@@ -129,7 +130,9 @@ export class MarketEngine extends DurableObject {
       this.onMessage(event.data).catch(error => this.failed(error));
     });
     ws.addEventListener("error", () => this.failed(new Error("Deriv WebSocket error")));
-    ws.addEventListener("close", () => {
+    ws.addEventListener("close", event => {
+      this.state.lastCloseCode = event.code;
+      this.state.lastCloseReason = event.reason || "";
       if (this.socket === ws) this.socket = null;
       this.connecting = false;
       if (this.state.running) {
@@ -156,6 +159,10 @@ export class MarketEngine extends DurableObject {
       this.state.activeSymbolsReceived = true;
       this.state.rawSymbolCount = allSymbols.length;
       this.state.matchedSymbolCount = markets.length;
+      this.state.sampleSymbolKeys = allSymbols[0] && typeof allSymbols[0] === "object"
+        ? Object.keys(allSymbols[0]).slice(0, 30) : [];
+      this.state.sampleSymbolPreview = allSymbols[0] && typeof allSymbols[0] === "object"
+        ? JSON.stringify(allSymbols[0]).slice(0, 1200) : String(allSymbols[0] ?? "empty");
       this.state.sampleSymbolNames = allSymbols.slice(0, 12).map(item =>
         String(item?.underlying_symbol_name || item?.display_name || item?.name || symbolCode(item) || "unnamed")
       );
