@@ -41,7 +41,7 @@ export class MarketEngine extends DurableObject {
       lastCloseCode: null, lastCloseReason: null,
       tickSubscriptionRequestedAt: null, tickSubscriptionRequestId: null,
       tickSubscriptionAckAt: null, tickSubscriptionCount: 0,
-      strategyMode: "DRY_RUN_NO_ORDERS", strategyWindow: DIGIT_HISTORY_WINDOW,
+      strategyMode: "SIGNALS_FOR_AUTHENTICATED_DEMO_EXECUTION", strategyWindow: DIGIT_HISTORY_WINDOW,
       strategyReadyMarkets: 0, strategySignals: 0,
       strategyLastEvaluation: null, strategyLastSignal: null, strategyMarkets: [],
       strategyPendingSignals: [], strategyLastExecution: null
