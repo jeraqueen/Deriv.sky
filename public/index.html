@@ -206,7 +206,7 @@ async function reportSettledStrategyResult(record) {
   try {
     const response = await fetch("/api/scanner?action=result", {
       method:"POST", headers:{"content-type":"application/json"},
-      body:JSON.stringify({contractId:String(record.contractId),market:record.market,cycle:Number(record.cycle),won:Number(record.profit) > 0})
+      body:JSON.stringify({contractId:String(record.contractId),market:record.market,cycle:Number(record.cycle),strategy:record.strategy || "DIFFERS",won:Number(record.profit) > 0})
     });
     const data = await response.json();
     if (response.ok && data.ok) {
@@ -438,7 +438,7 @@ function rememberSignal(signalId) {
 async function acknowledgeSignal(signal, accepted, detail, contractId) {
   const response = await fetch("/api/scanner?action=ack", {
     method:"POST", headers:{"content-type":"application/json"},
-    body:JSON.stringify({signalId:signal.signalId,market:signal.market,cycle:signal.cycle,accepted,detail,contractId:contractId ? String(contractId) : undefined})
+    body:JSON.stringify({signalId:signal.signalId,market:signal.market,cycle:signal.cycle,strategy:signal.strategy || "DIFFERS",accepted,detail,contractId:contractId ? String(contractId) : undefined})
   });
   const data = await response.json();
   if (!response.ok || !data.ok) throw new Error(data.error || "Could not acknowledge the signal.");
@@ -452,7 +452,7 @@ async function executeAutomaticSignal(signal) {
     rememberSignal(signal.signalId);
     return;
   }
-  if (!approved.has(signal.market) || signal.contractType !== "DIGITDIFF" ||
+  if (!approved.has(signal.market) || !["DIGITDIFF","DIGITMATCH"].includes(signal.contractType) ||
       signal.duration !== 1 || signal.durationUnit !== "t" ||
       !Number.isInteger(Number(signal.barrier)) || Number(signal.barrier) < 0 || Number(signal.barrier) > 9) {
     rememberSignal(signal.signalId);
@@ -464,9 +464,9 @@ async function executeAutomaticSignal(signal) {
   if (localStorage.getItem("sky_auto_attempted_" + signal.signalId) === "1") return;
   try {
     const proposalRequestedAt = Date.now();
-    $("tradeStatus").textContent = "FRESH SIGNAL · " + signal.market + " DIFFER " + signal.barrier + " · requesting quote immediately…";
+    $("tradeStatus").textContent = "FRESH SIGNAL · " + signal.market + " " + (signal.strategy || "DIFFERS") + " " + signal.barrier + " · requesting quote…";
     const proposalMsg = await wsRequest({
-      proposal:1, amount:1, basis:"stake", contract_type:"DIGITDIFF",
+      proposal:1, amount:1, basis:"stake", contract_type:signal.contractType,
       currency:"USD", duration:1, duration_unit:"t",
       underlying_symbol:signal.market, barrier:String(signal.barrier)
     }, 5000);
@@ -494,7 +494,7 @@ async function executeAutomaticSignal(signal) {
     localStorage.setItem("sky_auto_attempted_" + signal.signalId, "1");
     rememberSignal(signal.signalId);
     const buySentAt = Date.now();
-    $("tradeStatus").textContent = "Fresh quote accepted. Sending $1 DEMO DIFFER immediately…";
+    $("tradeStatus").textContent = "Fresh quote accepted. Sending $1 DEMO " + (signal.strategy || "DIFFERS") + " contract…";
     const buyMsg = await wsRequest({buy:proposal.id, price:1}, 5000);
     const buyConfirmedAt = Date.now();
     const bought = buyMsg.buy;
@@ -504,6 +504,7 @@ async function executeAutomaticSignal(signal) {
     }
     addConfirmedContract({
       contractId:String(bought.contract_id), market:signal.market, barrier:signal.barrier,
+      strategy:signal.strategy || "DIFFERS", contractType:signal.contractType,
       timestamp:bought.purchase_time ? new Date(Number(bought.purchase_time) * 1000).toISOString() : new Date().toISOString(),
       stake:1, currency:"USD", cycle:Number(signal.cycle),
       signalDetectedAt:signal.timestamp,
@@ -513,7 +514,7 @@ async function executeAutomaticSignal(signal) {
       totalExecutionMs:buyConfirmedAt - receivedAt
     });
     await acknowledgeSignal(signal, true, "Deriv confirmed contract " + bought.contract_id, bought.contract_id);
-    $("tradeStatus").textContent = "DEMO CONTRACT PLACED · " + signal.market + " · DIFFER " + signal.barrier + " · 1 tick · Contract ID " + bought.contract_id;
+    $("tradeStatus").textContent = "DEMO CONTRACT PLACED · " + signal.market + " · " + (signal.strategy || "DIFFERS") + " " + signal.barrier + " · 1 tick · Contract ID " + bought.contract_id;
     await wsRequest({proposal_open_contract:1, contract_id:bought.contract_id, subscribe:1});
   } catch (error) {
     const attempted = localStorage.getItem("sky_auto_attempted_" + signal.signalId) === "1";
@@ -550,7 +551,7 @@ async function monitorAutomaticTrading() {
     else {
       const current = $("tradeStatus").textContent;
       if (!/DEMO CONTRACT PLACED|Contract settled|Demo contract is open|Purchase response is uncertain/.test(current)) {
-        $("tradeStatus").textContent = "AUTO DEMO ON · Scanning 13 markets continuously; waiting for a fresh valid DIFFER trigger…";
+        $("tradeStatus").textContent = "BOARD RUNNING · Market rotation active; waiting for a valid MATCHES or DIFFERS entry…";
       }
     }
   } catch (error) {
@@ -569,7 +570,7 @@ $("autoToggle").addEventListener("click", () => {
     }
     scannerAction("start").then(() => {
       localStorage.setItem("sky_auto_demo_enabled","1");
-      $("tradeStatus").textContent = "Board started. Scanning markets and waiting for valid strategy entries…";
+      $("tradeStatus").textContent = "Board started. MATCHES and DIFFERS are active with $1 demo stakes and two-consecutive-win market rotation.";
       connectSignalStream(); monitorAutomaticTrading(); drainAutomaticQueue();
     }).catch(error => { autoDemoTradingEnabled = false; updateAutoToggle(); $("tradeStatus").textContent = "Could not start board: " + error.message; });
   } else {
