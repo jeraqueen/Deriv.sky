@@ -49,6 +49,9 @@ export class MarketEngine extends DurableObject {
     this.ready = this.ctx.blockConcurrencyWhile(async () => {
       const saved = await this.ctx.storage.get("state");
       if (saved) this.state = { ...this.state, ...saved };
+      this.state.strategyMode = "SIGNALS_FOR_AUTHENTICATED_DEMO_EXECUTION";
+      const strategySnapshot = await this.ctx.storage.get("strategyState");
+      if (strategySnapshot) this.differStrategy.restore(strategySnapshot);
     });
   }
 
@@ -109,6 +112,7 @@ export class MarketEngine extends DurableObject {
 
   async save() {
     await this.ctx.storage.put("state", this.state);
+    await this.ctx.storage.put("strategyState", this.differStrategy.snapshot());
   }
 
   async start() {
