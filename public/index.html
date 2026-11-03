@@ -191,22 +191,33 @@ function updateContractResult(contract) {
   }
 }
 async function reportSettledStrategyResult(record) {
-  if (!record || record.strategyResultReported || !record.isSold || !Number.isFinite(Number(record.profit)) || !record.market || !Number.isInteger(Number(record.cycle))) return;
-  const response = await fetch("/api/scanner?action=result", {
-    method:"POST", headers:{"content-type":"application/json"},
-    body:JSON.stringify({contractId:String(record.contractId),market:record.market,cycle:Number(record.cycle),won:Number(record.profit) > 0})
-  });
-  const data = await response.json();
-  if (response.ok && data.ok) {
-    record.strategyResultReported = true;
-    record.marketWins = data.wins;
-    record.marketLosses = data.losses;
-    record.marketCycleCompleted = data.completed === true;
-    saveContractRecords();
-    if (data.completed) $("tradeStatus").textContent = record.market + " completed three wins in this setup. The bot is rotating to other qualifying markets.";
-  } else if (response.status === 404) {
-    record.strategyResultReported = true;
-    saveContractRecords();
+  if (!record || record.strategyResultReported || record.strategyResultReporting || !record.isSold ||
+      !Number.isFinite(Number(record.profit)) || !record.market || !Number.isInteger(Number(record.cycle))) return;
+  record.strategyResultReporting = true;
+  try {
+    const response = await fetch("/api/scanner?action=result", {
+      method:"POST", headers:{"content-type":"application/json"},
+      body:JSON.stringify({contractId:String(record.contractId),market:record.market,cycle:Number(record.cycle),won:Number(record.profit) > 0})
+    });
+    const data = await response.json();
+    if (response.ok && data.ok) {
+      record.strategyResultReported = true;
+      record.marketWins = data.wins;
+      record.marketLosses = data.losses;
+      record.marketCycleCompleted = data.completed === true;
+      saveContractRecords();
+      if (data.completed) $("tradeStatus").textContent = record.market + " completed three wins in this setup. The bot is rotating to other qualifying markets.";
+    } else if (response.status === 404) {
+      record.strategyResultReported = true;
+      saveContractRecords();
+    }
+  } finally {
+    record.strategyResultReporting = false;
+  }
+}
+function retryUnreportedSettledResults() {
+  for (const record of contractRecords) {
+    if (record.isSold && !record.strategyResultReported) reportSettledStrategyResult(record).catch(() => {});
   }
 }
 function persistSession() {
@@ -513,6 +524,7 @@ async function monitorAutomaticTrading() {
       !tradeSocket || tradeSocket.readyState !== WebSocket.OPEN) return;
   autoStatusBusy = true;
   try {
+    retryUnreportedSettledResults();
     const response = await fetch("/api/scanner?action=status", {cache:"no-store"});
     const status = await response.json();
     if (!response.ok || !status.running || status.status !== "streaming") {
