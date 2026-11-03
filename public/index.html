@@ -107,24 +107,30 @@ async function api(path,method="GET") {
 }
 async function loadAccounts() {
   const data = await api("/api/accounts");
-  const accounts = data.data || data.accounts || [];
-  const demo = accounts.filter(a => String(a.account_type || a.type || "").toLowerCase().includes("demo") || String(a.account_category || "").toLowerCase().includes("demo"));
-  const choices = demo.length ? demo : accounts;
+  const rawAccounts = data.data || data.accounts || [];
+  const accounts = Array.isArray(rawAccounts) ? rawAccounts : [rawAccounts];
+  // Fail closed: only the documented account_type === "demo" is eligible.
+  // Never fall back to real accounts if no demo account is returned.
+  const demo = accounts.filter(a => String(a?.account_type || "").toLowerCase() === "demo");
   $("accounts").innerHTML = "";
-  choices.forEach(a => {
+  demo.forEach(a => {
     const option = document.createElement("option");
-    option.value = a.account_id || a.id;
-    option.textContent = (a.account_id || a.id) + " · " + (a.currency || "") + " · " + (a.account_type || a.type || "Account");
+    option.value = a.account_id;
+    option.dataset.accountType = String(a.account_type || "").toLowerCase();
+    option.textContent = a.account_id + " · " + (a.currency || "") + " · DEMO";
     $("accounts").appendChild(option);
   });
   $("accountPanel").hidden = false;
-  $("status").textContent = choices.length ? "Connected to Deriv. Select your demo account." : "Connected, but no accounts were returned.";
+  $("status").textContent = demo.length ? "Connected to Deriv. Select your demo account." : "Connected, but Deriv returned no verified demo Options account. Real accounts are hidden and cannot be selected.";
   $("connection").textContent = "Authorized";
-  $("accountType").textContent = "Demo";
+  $("accountType").textContent = demo.length ? "Demo only" : "No demo account";
 }
 async function loadSelectedAccount() {
+  const selected = $("accounts").selectedOptions[0];
   const id = $("accounts").value;
-  if (!id) throw new Error("No demo account selected.");
+  if (!id || !selected || selected.dataset.accountType !== "demo") {
+    throw new Error("Safety lock: select a verified demo account. Real accounts cannot be used.");
+  }
   const result = await api("/api/accounts/"+encodeURIComponent(id)+"/otp","POST");
   const wsUrl = result.data?.url;
   if (!wsUrl) throw new Error("Deriv did not return a WebSocket URL.");
