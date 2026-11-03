@@ -62,10 +62,7 @@ export class DiffersStrategy {
     }
 
     const s = this.stateFor(market);
-    if (s.pending && nowMs - s.pendingAt <= 10000) {
-      return { action: "PENDING", market, cycle: s.cycle, reason: "A DIFFER signal is awaiting a demo execution acknowledgement." };
-    }
-    if (s.pending) { s.pending = false; s.pendingAt = null; }
+    if (s.pending && nowMs - s.pendingAt > 10000) { s.pending = false; s.pendingAt = null; }
     const red = bars.filter(b => b.color === "red");
     const green = bars.filter(b => b.color === "green");
 
@@ -85,6 +82,8 @@ export class DiffersStrategy {
         s.previousRedPercentage = null;
         s.trades = 0;
         s.lastTriggerTick = null;
+        s.pending = false;
+        s.pendingAt = null;
       }
       return { action: "WAIT", reason: "The one-red/one-green separation condition is not met." };
     }
@@ -111,11 +110,15 @@ export class DiffersStrategy {
       s.previousRedPercentage = redPercentage;
       s.trades = 0;
       s.lastTriggerTick = null;
+      s.pending = false;
+      s.pendingAt = null;
     } else if (redPercentage > s.previousRedPercentage) {
       // Do not chase a rising red-bar barrier percentage. Block this setup
       // until the one-red/one-green shape disappears and reforms.
       s.blocked = true;
       s.previousRedPercentage = redPercentage;
+      s.pending = false;
+      s.pendingAt = null;
       return {
         action: "SWITCH_MARKET",
         market,
@@ -133,6 +136,10 @@ export class DiffersStrategy {
         cycle: s.cycle,
         reason: "This setup was invalidated by a rising red-bar percentage."
       };
+    }
+
+    if (s.pending && nowMs - s.pendingAt <= 10000) {
+      return { action: "PENDING", market, cycle: s.cycle, reason: "A DIFFER signal is awaiting a demo execution acknowledgement." };
     }
 
     if (s.trades >= DIFFER_RULES.maxTradesPerMarketPerCycle) {
@@ -174,7 +181,7 @@ export class DiffersStrategy {
   // Call only after Deriv confirms a successful purchase.
   recordAcceptedTrade(market, cycle) {
     const s = this.stateFor(market);
-    if (!s.active || s.blocked || s.cycle !== cycle ||
+    if (!s.active || s.blocked || !s.pending || s.cycle !== cycle ||
         s.trades >= DIFFER_RULES.maxTradesPerMarketPerCycle) return false;
     s.trades += 1;
     s.pending = false;
