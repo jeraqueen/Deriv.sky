@@ -23,6 +23,9 @@
     .warn{color:#ffd28a}.small{font-size:12px;color:#8798b2;margin-top:18px}
     .feedline{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid #24354c;font-size:13px}
     .feedline:last-child{border-bottom:0}.feedvalue{color:#8edcff;font-weight:700}
+    .contract-list{display:grid;gap:9px;margin-top:14px}.contract-item{background:#0b1422;border:1px solid #24354c;border-radius:12px;padding:12px}
+    .contract-head{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:13px;font-weight:750}
+    .contract-meta{font-size:12px;color:#9baac2;margin-top:6px;line-height:1.5}.positive{color:#6fe0a0!important}.negative{color:#ff8d8d!important}.empty-state{color:#8798b2;font-size:13px;padding:12px 0}
   </style>
 </head>
 <body>
@@ -49,6 +52,18 @@
     </div>
     <p class="small warn">Automatic mode: DEMO account only · USD $1 stake · maximum 3 confirmed contracts per market/setup cycle · fresh signals only. Keep this page open and connected for automatic execution.</p>
     <div id="tradeStatus" class="status">Connect and load your verified USD demo account to start automatic execution.</div>
+    <div style="margin-top:22px">
+      <h2>Live contract board</h2>
+      <p class="muted">Confirmed demo contracts and settled results. Results are saved on this device.</p>
+      <div class="grid">
+        <div class="metric"><span class="muted">Contracts</span><b id="statContracts">0</b></div>
+        <div class="metric"><span class="muted">Wins</span><b id="statWins" class="positive">0</b></div>
+        <div class="metric"><span class="muted">Losses</span><b id="statLosses" class="negative">0</b></div>
+        <div class="metric"><span class="muted">Win rate</span><b id="statWinRate">0%</b></div>
+        <div class="metric"><span class="muted">Net demo P/L</span><b id="statProfit">$0.00</b></div>
+      </div>
+      <div id="contractList" class="contract-list"><div class="empty-state">No confirmed contracts yet. Waiting for the first valid signal.</div></div>
+    </div>
   </section>
   <section class="panel" id="marketPanel">
     <div class="row" style="justify-content:space-between">
@@ -98,9 +113,71 @@ let autoDemoTradingEnabled = localStorage.getItem("sky_auto_demo_enabled") !== "
 let autoTradeBusy = false;
 let processedSignalIds = new Set();
 try { processedSignalIds = new Set(JSON.parse(localStorage.getItem("sky_auto_processed_signals") || "[]")); } catch { processedSignalIds = new Set(); }
+let contractRecords = [];
+try { contractRecords = JSON.parse(localStorage.getItem("sky_demo_contract_history") || "[]"); if (!Array.isArray(contractRecords)) contractRecords = []; } catch { contractRecords = []; }
 const TOKEN_KEY = "sky_deriv_access_token";
 const TOKEN_EXPIRY_KEY = "sky_deriv_token_expiry";
 const ACCOUNT_KEY = "sky_deriv_demo_account";
+function saveContractRecords() {
+  contractRecords = contractRecords.slice(0, 150);
+  localStorage.setItem("sky_demo_contract_history", JSON.stringify(contractRecords));
+  renderContractBoard();
+}
+function renderContractBoard() {
+  const settled = contractRecords.filter(c => c.isSold);
+  const wins = settled.filter(c => Number(c.profit) > 0).length;
+  const losses = settled.filter(c => Number(c.profit) <= 0).length;
+  const net = settled.reduce((sum,c) => sum + (Number(c.profit) || 0), 0);
+  const rate = settled.length ? (wins / settled.length * 100) : 0;
+  $("statContracts").textContent = String(contractRecords.length);
+  $("statWins").textContent = String(wins);
+  $("statLosses").textContent = String(losses);
+  $("statWinRate").textContent = rate.toFixed(1) + "%";
+  $("statProfit").textContent = (net >= 0 ? "+" : "") + net.toFixed(2) + " USD";
+  $("statProfit").className = net >= 0 ? "positive" : "negative";
+  const list = $("contractList");
+  list.replaceChildren();
+  if (!contractRecords.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No confirmed contracts yet. Waiting for the first valid signal.";
+    list.appendChild(empty);
+    return;
+  }
+  for (const c of contractRecords.slice(0,20)) {
+    const card = document.createElement("div");
+    card.className = "contract-item";
+    const head = document.createElement("div");
+    head.className = "contract-head";
+    const name = document.createElement("span");
+    name.textContent = (c.market || "Market") + " · DIFFER " + String(c.barrier ?? "—") + " · 1 tick";
+    const result = document.createElement("span");
+    result.textContent = c.isSold ? ((Number(c.profit) > 0 ? "WIN" : "LOSS") + " · " + (Number(c.profit) > 0 ? "+" : "") + Number(c.profit).toFixed(2) + " USD") : "OPEN";
+    result.className = c.isSold ? (Number(c.profit) > 0 ? "positive" : "negative") : "";
+    head.append(name,result);
+    const meta = document.createElement("div");
+    meta.className = "contract-meta";
+    meta.textContent = "Contract ID: " + String(c.contractId) + " · " + new Date(c.timestamp || Date.now()).toLocaleString() + (c.status ? " · " + c.status : "");
+    card.append(head,meta);
+    list.appendChild(card);
+  }
+}
+function addConfirmedContract(record) {
+  if (contractRecords.some(c => String(c.contractId) === String(record.contractId))) return;
+  contractRecords.unshift({...record,isSold:false,profit:null,status:"open"});
+  saveContractRecords();
+}
+function updateContractResult(contract) {
+  const id = String(contract.contract_id || "");
+  if (!id) return;
+  const record = contractRecords.find(c => String(c.contractId) === id);
+  if (!record) return;
+  record.isSold = Boolean(contract.is_sold);
+  record.status = String(contract.status || (contract.is_sold ? "settled" : "open"));
+  if (contract.profit !== undefined && contract.profit !== null) record.profit = Number(contract.profit);
+  if (contract.sell_price !== undefined) record.sellPrice = Number(contract.sell_price);
+  saveContractRecords();
+}
 function persistSession() {
   if (accessToken && expiresAt > Date.now()) {
     localStorage.setItem(TOKEN_KEY, accessToken);
@@ -214,6 +291,7 @@ async function loadSelectedAccount() {
     }
     if (msg.msg_type === "proposal_open_contract" && msg.proposal_open_contract) {
       const contract = msg.proposal_open_contract;
+      updateContractResult(contract);
       $("tradeStatus").textContent = contract.is_sold
         ? "Contract settled: " + (contract.status || "completed") + " · P/L " + String(contract.profit ?? "not supplied") + " " + selectedDemoAccount.currency
         : "Demo contract is open · Contract ID " + String(contract.contract_id || "");
@@ -225,6 +303,10 @@ async function loadSelectedAccount() {
     tradeSocket.onerror = () => { clearTimeout(timer); reject(new Error("Demo WebSocket connection failed.")); };
   });
   $("connection").textContent = "Connected";
+  renderContractBoard();
+  for (const record of contractRecords.filter(c => !c.isSold).slice(0,50)) {
+    try { await wsRequest({proposal_open_contract:1, contract_id:Number(record.contractId), subscribe:1}); } catch {}
+  }
   $("accountStatus").textContent = "Authenticated DEMO connection is active. Automatic $1 DIFFER execution is " + (autoDemoTradingEnabled ? "enabled." : "paused.");
   updateAutoToggle();
   $("tradeStatus").textContent = autoDemoTradingEnabled
@@ -305,6 +387,11 @@ async function executeAutomaticSignal(signal) {
       $("tradeStatus").textContent = "Purchase response was not confirmed. Check Deriv demo transactions before any retry.";
       return;
     }
+    addConfirmedContract({
+      contractId:String(bought.contract_id), market:signal.market, barrier:signal.barrier,
+      timestamp:bought.purchase_time ? new Date(Number(bought.purchase_time) * 1000).toISOString() : new Date().toISOString(),
+      stake:1, currency:"USD"
+    });
     await acknowledgeSignal(signal, true, "Deriv confirmed contract " + bought.contract_id);
     $("tradeStatus").textContent = "DEMO CONTRACT PLACED · " + signal.market + " · DIFFER " + signal.barrier + " · 1 tick · Contract ID " + bought.contract_id;
     await wsRequest({proposal_open_contract:1, contract_id:bought.contract_id, subscribe:1});
@@ -435,6 +522,7 @@ $("feedStop").addEventListener("click", async () => {
 });
 scannerAction("status").catch(e => $("feedStatus").textContent = e.message);
 updateAutoToggle();
+renderContractBoard();
 setInterval(monitorAutomaticTrading, 1500);
 </script>
 </body>
