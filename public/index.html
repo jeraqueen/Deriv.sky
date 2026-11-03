@@ -41,14 +41,14 @@
     <div class="grid">
       <div class="metric"><span class="muted">Connection</span><b id="connection">Not connected</b></div>
       <div class="metric"><span class="muted">Account type</span><b id="accountType">Demo</b></div>
-      <div class="metric"><span class="muted">Trading mode</span><b>Disabled</b></div>
+      <div class="metric"><span class="muted">Trading mode</span><b id="tradingMode">AUTO DEMO</b></div>
     </div>
     <div id="accountStatus" class="status"></div>
     <div class="row" style="margin-top:14px">
-      <button id="demoTrade" disabled>Place ONE $1 demo DIFFER contract</button>
+      <button id="autoToggle">Pause automatic trading</button>
     </div>
-    <p class="small warn">Safety: demo account only, $1 stake, one contract maximum. The button requires a fresh strategy signal (no older than 10 seconds). No automatic repeat trades.</p>
-    <div id="tradeStatus" class="status">Connect and load a verified demo account to enable the test.</div>
+    <p class="small warn">Automatic mode: DEMO account only · USD $1 stake · maximum 3 confirmed contracts per market/setup cycle · fresh signals only. Keep this page open and connected for automatic execution.</p>
+    <div id="tradeStatus" class="status">Connect and load your verified USD demo account to start automatic execution.</div>
   </section>
   <section class="panel" id="marketPanel">
     <div class="row" style="justify-content:space-between">
@@ -94,8 +94,10 @@ let selectedDemoAccount = null;
 let tradeSocket = null;
 let wsRequestId = 100;
 let pendingWsRequests = new Map();
-let demoTradeUsed = localStorage.getItem("sky_demo_trade_used") === "1";
-let demoTradeAttempted = localStorage.getItem("sky_demo_trade_attempted") === "1";
+let autoDemoTradingEnabled = localStorage.getItem("sky_auto_demo_enabled") !== "0";
+let autoTradeBusy = false;
+let processedSignalIds = new Set();
+try { processedSignalIds = new Set(JSON.parse(localStorage.getItem("sky_auto_processed_signals") || "[]")); } catch { processedSignalIds = new Set(); }
 const TOKEN_KEY = "sky_deriv_access_token";
 const TOKEN_EXPIRY_KEY = "sky_deriv_token_expiry";
 const ACCOUNT_KEY = "sky_deriv_demo_account";
@@ -223,53 +225,127 @@ async function loadSelectedAccount() {
     tradeSocket.onerror = () => { clearTimeout(timer); reject(new Error("Demo WebSocket connection failed.")); };
   });
   $("connection").textContent = "Connected";
-  $("accountStatus").textContent = "Authenticated DEMO connection is active. Trading test is locked until a fresh DIFFER signal appears.";
-  $("demoTrade").disabled = demoTradeUsed || demoTradeAttempted;
-  if (demoTradeUsed || demoTradeAttempted) $("tradeStatus").textContent = "The one-contract demo test has already been used or attempted. No repeat order is allowed.";
+  $("accountStatus").textContent = "Authenticated DEMO connection is active. Automatic $1 DIFFER execution is " + (autoDemoTradingEnabled ? "enabled." : "paused.");
+  updateAutoToggle();
+  $("tradeStatus").textContent = autoDemoTradingEnabled
+    ? "Automatic demo execution is active. Waiting for the next fresh valid DIFFER signal…"
+    : "Automatic demo execution is paused. Press Resume to continue.";
 }
 
-async function placeOneDemoDiffer() {
-  const button = $("demoTrade");
-  button.disabled = true;
+function updateAutoToggle() {
+  const button = $("autoToggle");
+  if (!button) return;
+  button.textContent = autoDemoTradingEnabled ? "Pause automatic trading" : "Resume automatic trading";
+  $("tradingMode").textContent = autoDemoTradingEnabled ? "AUTO DEMO ON" : "PAUSED";
+}
+function rememberSignal(signalId) {
+  processedSignalIds.add(signalId);
+  while (processedSignalIds.size > 250) processedSignalIds.delete(processedSignalIds.values().next().value);
+  localStorage.setItem("sky_auto_processed_signals", JSON.stringify(Array.from(processedSignalIds)));
+}
+async function acknowledgeSignal(signal, accepted, detail) {
+  const response = await fetch("/api/scanner?action=ack", {
+    method:"POST", headers:{"content-type":"application/json"},
+    body:JSON.stringify({signalId:signal.signalId,market:signal.market,cycle:signal.cycle,accepted,detail})
+  });
+  const data = await response.json();
+  if (!response.ok || !data.ok) throw new Error(data.error || "Could not acknowledge the signal.");
+  return data;
+}
+async function executeAutomaticSignal(signal) {
+  const ageMs = Date.now() - Date.parse(signal.timestamp);
+  const approved = new Set(["1HZ10V","1HZ15V","1HZ25V","1HZ30V","1HZ50V","1HZ75V","1HZ90V","1HZ100V","R_10","R_25","R_50","R_75","R_100"]);
+  if (ageMs < 0 || ageMs > 10000) return;
+  if (!approved.has(signal.market) || signal.contractType !== "DIGITDIFF" ||
+      signal.duration !== 1 || signal.durationUnit !== "t" ||
+      !Number.isInteger(Number(signal.barrier)) || Number(signal.barrier) < 0 || Number(signal.barrier) > 9) {
+    rememberSignal(signal.signalId);
+    await acknowledgeSignal(signal, false, "Signal failed client-side market/contract validation.");
+    return;
+  }
+  if (!selectedDemoAccount || selectedDemoAccount.accountType !== "demo" ||
+      selectedDemoAccount.currency !== "USD" || !tradeSocket || tradeSocket.readyState !== WebSocket.OPEN) return;
+  if (localStorage.getItem("sky_auto_attempted_" + signal.signalId) === "1") return;
   try {
-    if (demoTradeUsed || demoTradeAttempted) throw new Error("The one-contract demo test has already been used or attempted. No repeat order is allowed.");
-    if (!selectedDemoAccount || selectedDemoAccount.accountType !== "demo") throw new Error("A verified demo account is required.");
-    if (!tradeSocket || tradeSocket.readyState !== WebSocket.OPEN) throw new Error("Reconnect your demo account first.");
-    const statusResponse = await fetch("/api/scanner?action=status", {cache:"no-store"});
-    const status = await statusResponse.json();
-    const signal = status.strategyLastSignal;
-    const ageMs = signal?.timestamp ? Date.now() - Date.parse(signal.timestamp) : Infinity;
-    const approved = new Set(["1HZ10V","1HZ15V","1HZ25V","1HZ30V","1HZ50V","1HZ75V","1HZ90V","1HZ100V","R_10","R_25","R_50","R_75","R_100"]);
-    if (!status.running || status.status !== "streaming") throw new Error("Market scanner is not currently streaming.");
-    if (!signal || signal.orderPlaced !== false || ageMs < 0 || ageMs > 10000) throw new Error("No fresh DIFFER signal from the last 10 seconds. No contract was placed.");
-    if (!approved.has(signal.market) || !Number.isInteger(Number(signal.barrier)) || Number(signal.barrier) < 0 || Number(signal.barrier) > 9) throw new Error("Signal failed market or barrier safety checks.");
-    if (!selectedDemoAccount.currency) throw new Error("Deriv account currency is missing.");
-    $("tradeStatus").textContent = "Requesting a $1 demo DIFFER quote for " + signal.market + " barrier " + signal.barrier + "…";
+    $("tradeStatus").textContent = "Fresh signal: " + signal.market + " DIFFER barrier " + signal.barrier + ". Requesting a $1 USD demo quote…";
     const proposalMsg = await wsRequest({
       proposal:1, amount:1, basis:"stake", contract_type:"DIGITDIFF",
-      currency:selectedDemoAccount.currency, duration:1, duration_unit:"t",
+      currency:"USD", duration:1, duration_unit:"t",
       underlying_symbol:signal.market, barrier:String(signal.barrier)
     });
     const proposal = proposalMsg.proposal;
-    if (!proposal?.id || !Number.isFinite(Number(proposal.ask_price))) throw new Error("Deriv did not return a valid proposal. No purchase was made.");
-    if (Number(proposal.ask_price) > 1.000001) throw new Error("Quoted stake exceeds the $1 limit. No purchase was made.");
-    $("tradeStatus").textContent = "Quote received. Sending the single $1 demo purchase…";
-    demoTradeAttempted = true;
-    localStorage.setItem("sky_demo_trade_attempted", "1");
-    button.disabled = true;
+    if (!proposal?.id || !Number.isFinite(Number(proposal.ask_price))) {
+      rememberSignal(signal.signalId);
+      await acknowledgeSignal(signal, false, "Deriv did not return a valid proposal.");
+      $("tradeStatus").textContent = "Signal skipped: Deriv returned no valid $1 quote.";
+      return;
+    }
+    if (Number(proposal.ask_price) > 1.000001) {
+      rememberSignal(signal.signalId);
+      await acknowledgeSignal(signal, false, "Quoted stake exceeded the $1 USD limit.");
+      $("tradeStatus").textContent = "Signal skipped: quoted stake exceeded $1 USD.";
+      return;
+    }
+    // Persist the attempt before sending buy. If the response is lost, never repeat blindly.
+    localStorage.setItem("sky_auto_attempted_" + signal.signalId, "1");
+    rememberSignal(signal.signalId);
+    $("tradeStatus").textContent = "Quote accepted. Sending one $1 DEMO DIFFER contract…";
     const buyMsg = await wsRequest({buy:proposal.id, price:1});
     const bought = buyMsg.buy;
-    if (!bought?.contract_id) throw new Error("Deriv did not confirm a contract purchase.");
-    demoTradeUsed = true;
-    localStorage.setItem("sky_demo_trade_used", "1");
-    $("tradeStatus").textContent = "DEMO CONTRACT PLACED · " + signal.market + " · DIFFER barrier " + signal.barrier + " · 1 tick · Contract ID " + bought.contract_id;
+    if (!bought?.contract_id) {
+      $("tradeStatus").textContent = "Purchase response was not confirmed. Check Deriv demo transactions before any retry.";
+      return;
+    }
+    await acknowledgeSignal(signal, true, "Deriv confirmed contract " + bought.contract_id);
+    $("tradeStatus").textContent = "DEMO CONTRACT PLACED · " + signal.market + " · DIFFER " + signal.barrier + " · 1 tick · Contract ID " + bought.contract_id;
     await wsRequest({proposal_open_contract:1, contract_id:bought.contract_id, subscribe:1});
   } catch (error) {
-    $("tradeStatus").textContent = error.message + (demoTradeAttempted ? " The purchase request may have reached Deriv. Do not retry; check your Deriv demo portfolio/transactions first." : " No purchase request was sent.");
-    button.disabled = demoTradeUsed || demoTradeAttempted;
+    const attempted = localStorage.getItem("sky_auto_attempted_" + signal.signalId) === "1";
+    if (!attempted) {
+      rememberSignal(signal.signalId);
+      try { await acknowledgeSignal(signal, false, error.message); } catch {}
+      $("tradeStatus").textContent = "Signal not traded: " + error.message;
+    } else {
+      $("tradeStatus").textContent = "Purchase response is uncertain. Do not retry this signal; check Deriv demo transactions. " + error.message;
+    }
   }
 }
-$("demoTrade").addEventListener("click", placeOneDemoDiffer);
+async function monitorAutomaticTrading() {
+  if (autoTradeBusy || !autoDemoTradingEnabled || !selectedDemoAccount ||
+      selectedDemoAccount.accountType !== "demo" || selectedDemoAccount.currency !== "USD" ||
+      !tradeSocket || tradeSocket.readyState !== WebSocket.OPEN) return;
+  autoTradeBusy = true;
+  try {
+    const response = await fetch("/api/scanner?action=status", {cache:"no-store"});
+    const status = await response.json();
+    if (!response.ok || !status.running || status.status !== "streaming") {
+      $("tradeStatus").textContent = "Auto demo is armed; waiting for the background market feed to stream.";
+      return;
+    }
+    const signals = Array.isArray(status.strategyPendingSignals) ? status.strategyPendingSignals : [];
+    const next = signals
+      .filter(s => s && s.signalId && !processedSignalIds.has(s.signalId) &&
+        localStorage.getItem("sky_auto_attempted_" + s.signalId) !== "1" &&
+        Date.now() - Date.parse(s.timestamp) >= 0 &&
+        Date.now() - Date.parse(s.timestamp) <= 10000)
+      .sort((a,b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))[0];
+    if (next) await executeAutomaticSignal(next);
+    else $("tradeStatus").textContent = "AUTO DEMO ON · Scanning 13 markets continuously; waiting for a fresh valid DIFFER trigger…";
+  } catch (error) {
+    $("tradeStatus").textContent = "Auto execution check: " + error.message;
+  } finally {
+    autoTradeBusy = false;
+  }
+}
+$("autoToggle").addEventListener("click", () => {
+  autoDemoTradingEnabled = !autoDemoTradingEnabled;
+  localStorage.setItem("sky_auto_demo_enabled", autoDemoTradingEnabled ? "1" : "0");
+  updateAutoToggle();
+  $("tradeStatus").textContent = autoDemoTradingEnabled
+    ? "Automatic $1 USD DEMO trading resumed."
+    : "Automatic trading paused. The background scanner continues running.";
+  if (autoDemoTradingEnabled) monitorAutomaticTrading();
+});
 
 $("connect").addEventListener("click",()=>startLogin().catch(e=>$("status").textContent=e.message));
 $("load").addEventListener("click",()=>loadSelectedAccount().catch(e=>$("accountStatus").textContent=e.message));
@@ -278,7 +354,7 @@ $("disconnect").addEventListener("click",()=>{
   if (tradeSocket) { try { tradeSocket.close(); } catch {} tradeSocket=null; }
   clearPersistedSession();
   $("accountPanel").hidden=true; $("disconnect").hidden=true;
-  $("connection").textContent="Not connected"; $("demoTrade").disabled=true;
+  $("connection").textContent="Not connected";
   $("status").textContent="Disconnected. Saved Deriv authorization and demo account were cleared.";
 });
 (async()=>{
@@ -344,6 +420,8 @@ $("feedStop").addEventListener("click", async () => {
   try { await scannerAction("stop"); } catch (e) { $("feedStatus").textContent = e.message; }
 });
 scannerAction("status").catch(e => $("feedStatus").textContent = e.message);
+updateAutoToggle();
+setInterval(monitorAutomaticTrading, 1500);
 </script>
 </body>
 </html>
