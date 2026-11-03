@@ -265,7 +265,7 @@ async function placeOneDemoDiffer() {
     $("tradeStatus").textContent = "DEMO CONTRACT PLACED · " + signal.market + " · DIFFER barrier " + signal.barrier + " · 1 tick · Contract ID " + bought.contract_id;
     await wsRequest({proposal_open_contract:1, contract_id:bought.contract_id, subscribe:1});
   } catch (error) {
-    $("tradeStatus").textContent = error.message + " No further order was sent.";
+    $("tradeStatus").textContent = error.message + (demoTradeAttempted ? " The purchase request may have reached Deriv. Do not retry; check your Deriv demo portfolio/transactions first." : " No purchase request was sent.");
     button.disabled = demoTradeUsed || demoTradeAttempted;
   }
 }
