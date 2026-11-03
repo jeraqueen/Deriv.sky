@@ -12,14 +12,18 @@ function lastDigit(tick) {
   const digits = quote.toFixed(tick.pip_size).replace(/\D/g, "");
   return digits.length ? Number(digits.at(-1)) : null;
 }
+function symbolCode(item) {
+  return String(item?.underlying_symbol || item?.symbol || "");
+}
 function isVolatility(item) {
-  // Deriv's active_symbols labels vary by market/version. Do not require
-  // the word "Index" to be present; inspect all identifying fields.
-  const identity = [item?.display_name, item?.name, item?.symbol]
+  // New Deriv API uses underlying_symbol and underlying_symbol_name;
+  // legacy responses use symbol and display_name.
+  const symbol = symbolCode(item);
+  const identity = [item?.underlying_symbol_name, item?.display_name, item?.name, symbol]
     .filter(Boolean).join(" ");
   return /volatility/i.test(identity) ||
-    /^(?:1HZ)?(?:10|15|25|30|50|75|90|100)V$/i.test(String(item?.symbol || "")) ||
-    /^R_(?:10|25|50|75|100)$/i.test(String(item?.symbol || ""));
+    /^(?:1HZ)?(?:10|15|25|30|50|75|90|100)V$/i.test(symbol) ||
+    /^R_(?:10|25|50|75|100)$/i.test(symbol);
 }
 
 export class MarketEngine extends DurableObject {
@@ -153,23 +157,24 @@ export class MarketEngine extends DurableObject {
       this.state.rawSymbolCount = allSymbols.length;
       this.state.matchedSymbolCount = markets.length;
       this.state.sampleSymbolNames = allSymbols.slice(0, 12).map(item =>
-        String(item?.display_name || item?.name || item?.symbol || "unnamed")
+        String(item?.underlying_symbol_name || item?.display_name || item?.name || symbolCode(item) || "unnamed")
       );
       this.state.markets = markets.length;
       this.state.status = markets.length ? "streaming" : "no-volatility-markets";
       if (this.socket?.readyState === WebSocket.OPEN) {
         for (const item of markets) {
-          this.socket.send(JSON.stringify({ ticks: item.symbol, subscribe: 1 }));
+          const symbol = symbolCode(item);
+          if (symbol) this.socket.send(JSON.stringify({ ticks: symbol, subscribe: 1 }));
         }
       }
       await this.save();
       return;
     }
-    if (msg.msg_type === "tick" && msg.tick?.symbol) {
+    if (msg.msg_type === "tick" && (msg.tick?.symbol || msg.tick?.underlying_symbol)) {
       const digit = lastDigit(msg.tick);
       if (digit === null) return;
       this.state.ticks += 1;
-      this.state.latestMarket = msg.tick.symbol;
+      this.state.latestMarket = msg.tick.symbol || msg.tick.underlying_symbol;
       this.state.latestDigit = digit;
       this.state.lastTickAt = new Date().toISOString();
       // Keep hot tick updates in memory; persist snapshots on the minute
