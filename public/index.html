@@ -30,7 +30,7 @@
   <div class="top"><div class="logo">S</div><div><h1>The Sky Bot</h1><div class="sub">Deriv trading assistant · Demo setup</div></div><span class="pill">DEMO FIRST</span></div>
   <section class="panel">
     <h2>Connect your Deriv account</h2>
-    <p class="muted">Sign in securely with Deriv and approve the requested trading permission. Your password stays with Deriv. This first build connects to your account; automated trading is not enabled.</p>
+    <p class="muted">Sign in securely with Deriv and approve the requested trading permission. Your password stays with Deriv. Automated contracts are restricted to your verified USD demo account; real accounts are blocked.</p>
     <div class="row"><button id="connect">Connect with Deriv</button><button id="disconnect" class="secondary" hidden>Disconnect</button></div>
     <div id="status" class="status">Not connected</div>
   </section>
@@ -67,22 +67,22 @@
       <button id="feedTest" class="secondary">Test live feed now</button>
       <button id="feedStop" class="secondary">Stop service</button>
     </div>
-    <p class="small warn" id="feedNote">Dry-run only. Live tick data is monitored; no trades are submitted. Exact Deriv red/green digit-bar percentages still need validation before DIFFER can be activated.</p>
+    <p class="small warn" id="feedNote">Signals use a rolling 100-tick histogram per market. Automatic execution is limited to the connected USD demo account; real accounts are blocked.</p>
   </section>
   <section class="panel" id="strategyPanel">
     <div class="row" style="justify-content:space-between">
       <h2>Approved strategy · DIFFER</h2><span class="pill">RULES SAVED</span>
     </div>
-    <p class="muted">The approved DIFFER rules are saved. The background service now monitors live Volatility Index ticks. The exact red/green digit-bar percentages are not yet connected, so the strategy is not allowed to trigger trades.</p>
+    <p class="muted">The approved DIFFER rules use the last 100 live tick digits per market. A unique highest-frequency digit is green, a unique lowest-frequency digit is red, ties are rejected, and the current digit must touch the red digit before a contract can be requested.</p>
     <div class="grid">
       <div class="metric"><span class="muted">Contract</span><b>DIFFER · 1 tick</b></div>
       <div class="metric"><span class="muted">Barrier</span><b>Red-bar digit</b></div>
       <div class="metric"><span class="muted">Trade limit</span><b>3 / market / cycle</b></div>
     </div>
     <p class="muted" style="margin-top:14px">If the red-bar percentage rises before entry, abandon that setup and scan another market. Never chase a rising barrier percentage. Duplicate triggers are suppressed.</p>
-    <p class="status warn">Background live tick monitoring is being tested. DIFFER signal evaluation is still dry-run only; no orders can be submitted.</p>
+    <p class="status warn">The scanner runs in Cloudflare. Confirmed $1 USD demo contracts are submitted by the connected browser only; keep this page open to trade.</p>
   </section>
-  <p class="small">Cloudflare Free usage limits apply. If daily quotas are reached, the background service may stop until the quota resets. No trade execution is enabled.</p>
+  <p class="small">Cloudflare Free usage limits apply. If daily quotas are reached, the background service may stop until the quota resets. Automatic execution is DEMO-only. Real accounts are never selectable.</p>
 </main>
 <script>
 const APP_ID = "34QViCWtYpl4qov16nZy0";
