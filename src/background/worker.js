@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { DiffersStrategy } from "./differs.js";
-import { evaluateMatchesStrategy } from "../strategies/matches.js";
+import { evaluateMatchesStrategy } from "./matches.js";
 import { buildDigitHistogram, DIGIT_HISTORY_WINDOW } from "./digit-histogram.js";
 
 const DERIV_PUBLIC_WS = "wss://api.derivws.com/trading/v1/options/ws/public";
