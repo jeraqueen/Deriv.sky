@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sky-bot-engine",
+  "main": "src/background/worker.js",
+  "compatibility_date": "2026-11-03",
+  "durable_objects": {
+    "bindings": [
+      { "name": "MARKET_ENGINE", "class_name": "MarketEngine" }
+    ]
+  },
+  "exports": {
+    "MarketEngine": { "type": "durable-object", "storage": "sqlite" }
+  },
+  "triggers": { "crons": ["* * * * *"] }
+}
