@@ -7,6 +7,8 @@ test("recognizes named Volatility Indices", () => {
   assert.equal(isVolatilityIndex({ display_name: "Volatility 10 (1s)" }), true);
   assert.equal(isVolatilityIndex({ symbol: "1HZ100V" }), true);
   assert.equal(isVolatilityIndex({ symbol: "R_75" }), true);
+  assert.equal(isVolatilityIndex({ underlying_symbol: "1HZ100V", underlying_symbol_name: "Volatility 100 (1s) Index" }), true);
+  assert.equal(isVolatilityIndex({ underlying_symbol: "R_75", underlying_symbol_name: "Volatility 75 Index" }), true);
   assert.equal(isVolatilityIndex({ display_name: "Boom 500 Index" }), false);
 });
 
