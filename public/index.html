@@ -110,7 +110,7 @@ let tradeSocket = null;
 let wsRequestId = 100;
 let pendingWsRequests = new Map();
 let autoDemoTradingEnabled = localStorage.getItem("sky_auto_demo_enabled") !== "0";
-let autoTradeBusy = false;
+let activeExecutionMarkets = new Set();
 let autoStatusBusy = false;
 let signalSocket = null;
 let signalReconnectDelay = 1000;
@@ -391,19 +391,25 @@ function enqueueAutomaticSignal(signal) {
   drainAutomaticQueue();
 }
 async function drainAutomaticQueue() {
-  if (autoTradeBusy) return;
-  autoTradeBusy = true;
-  try {
-    while (executionQueue.length && autoDemoTradingEnabled) {
-      const signal = executionQueue.shift();
-      queuedSignalIds.delete(signal.signalId);
-      if (invalidatedSignalIds.has(signal.signalId)) { rememberSignal(signal.signalId); continue; }
-      await executeAutomaticSignal(signal);
+  if (!autoDemoTradingEnabled || !selectedDemoAccount || selectedDemoAccount.accountType !== "demo") return;
+  const jobs = [];
+  for (let i = 0; i < executionQueue.length;) {
+    const signal = executionQueue[i];
+    if (activeExecutionMarkets.has(signal.market)) { i++; continue; }
+    executionQueue.splice(i, 1);
+    queuedSignalIds.delete(signal.signalId);
+    if (invalidatedSignalIds.has(signal.signalId)) {
+      rememberSignal(signal.signalId);
+      continue;
     }
-  } finally {
-    autoTradeBusy = false;
-    if (executionQueue.length && autoDemoTradingEnabled) drainAutomaticQueue();
+    activeExecutionMarkets.add(signal.market);
+    jobs.push((async () => {
+      try { await executeAutomaticSignal(signal); }
+      finally { activeExecutionMarkets.delete(signal.market); }
+    })());
   }
+  if (jobs.length) await Promise.all(jobs);
+  if (executionQueue.length && autoDemoTradingEnabled) drainAutomaticQueue();
 }
 function rememberSignal(signalId) {
   processedSignalIds.add(signalId);
