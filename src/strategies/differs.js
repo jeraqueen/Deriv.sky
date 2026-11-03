@@ -11,7 +11,7 @@ export const DIFFER_RULES = Object.freeze({
   contractType: "DIGITDIFF",
   duration: 1,
   durationUnit: "t",
-  maxWinsPerMarketPerCycle: 3,
+  maxWinsPerMarketPerCycle: 999999, // Rotation is controlled centrally by two consecutive wins across both strategies.
   minimumDigitSeparation: 2,
   requiredRedBars: 1,
   requiredGreenBars: 1,
@@ -35,6 +35,8 @@ export class DiffersStrategy {
         redDigit: null,
         greenDigit: null,
         previousRedPercentage: null,
+        redRiseCount: 0,
+        redRiseStartPercentage: null,
         trades: 0,
         wins: 0,
         losses: 0,
@@ -49,6 +51,8 @@ export class DiffersStrategy {
     state.wins ??= 0;
     state.losses ??= 0;
     state.openContracts ??= [];
+    state.redRiseCount ??= 0;
+    state.redRiseStartPercentage ??= null;
     return state;
   }
 
@@ -127,20 +131,22 @@ export class DiffersStrategy {
       s.pending = false;
       s.pendingAt = null;
     } else if (redPercentage > s.previousRedPercentage) {
-      // Do not chase a rising red-bar barrier percentage. Block this setup
-      // until the one-red/one-green shape disappears and reforms.
-      s.blocked = true;
+      // Ignore one-tick noise. Invalidate only after two consecutive rises
+      // whose cumulative increase is at least 2 percentage points.
+      if (s.redRiseCount === 0) s.redRiseStartPercentage = s.previousRedPercentage;
+      s.redRiseCount += 1;
       s.previousRedPercentage = redPercentage;
-      s.pending = false;
-      s.pendingAt = null;
-      return {
-        action: "SWITCH_MARKET",
-        market,
-        cycle: s.cycle,
-        reason: "Red-bar barrier percentage increased; abandon this setup and scan another market."
-      };
+      if (s.redRiseCount >= 2 && redPercentage - Number(s.redRiseStartPercentage) >= 2) {
+        s.blocked = true;
+        s.pending = false;
+        s.pendingAt = null;
+        return { action: "SWITCH_MARKET", market, cycle: s.cycle,
+          reason: "Red-bar percentage rose by at least 2 points over two consecutive observations." };
+      }
     } else {
       s.previousRedPercentage = redPercentage;
+      s.redRiseCount = 0;
+      s.redRiseStartPercentage = null;
     }
 
     if (s.wins >= DIFFER_RULES.maxWinsPerMarketPerCycle) {
@@ -221,7 +227,7 @@ export class DiffersStrategy {
       return { ok: true, staleCycle: true, wins: s.wins, losses: s.losses };
     }
     if (won) s.wins += 1;
-    else s.losses += 1;
+    else { s.losses += 1; s.wins = 0; }
     if (s.wins >= DIFFER_RULES.maxWinsPerMarketPerCycle) s.blocked = true;
     return { ok: true, wins: s.wins, losses: s.losses,
       completed: s.wins >= DIFFER_RULES.maxWinsPerMarketPerCycle };
