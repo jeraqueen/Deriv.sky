@@ -113,6 +113,8 @@ export class DiffersStrategy {
       s.redDigit = redDigit;
       s.greenDigit = greenDigit;
       s.previousRedPercentage = redPercentage;
+      s.redRiseCount = 0;
+      s.redRiseStartPercentage = null;
       s.trades = 0;
       s.wins = 0;
       s.losses = 0;
