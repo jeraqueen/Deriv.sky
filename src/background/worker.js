@@ -109,7 +109,8 @@ export class MarketEngine extends DurableObject {
       if (body.market !== signal.market || Number(body.cycle) !== Number(signal.cycle)) return Response.json({ ok: false, error: "Signal acknowledgement did not match the pending signal." }, { status: 400 });
       let accepted = false;
       if (body.accepted === true) {
-        accepted = this.differStrategy.recordAcceptedTrade(signal.market, signal.cycle);
+        if (!body.contractId) return Response.json({ ok: false, error: "Confirmed purchase acknowledgement requires a contract ID." }, { status: 400 });
+        accepted = this.differStrategy.recordAcceptedTrade(signal.market, signal.cycle, body.contractId);
         if (!accepted) return Response.json({ ok: false, error: "Strategy cycle no longer accepts this trade." }, { status: 409 });
       } else {
         this.differStrategy.releasePending(signal.market, signal.cycle);
@@ -118,6 +119,23 @@ export class MarketEngine extends DurableObject {
       this.state.strategyLastExecution = { signalId: signal.signalId, market: signal.market, cycle: signal.cycle, accepted, detail: String(body.detail || "").slice(0, 240), timestamp: new Date().toISOString() };
       await this.save();
       return Response.json({ ok: true, accepted, pending: this.state.strategyPendingSignals.length, execution: this.state.strategyLastExecution });
+    }
+    if (url.pathname === "/result" && request.method === "POST") {
+      let body;
+      try { body = await request.json(); } catch { return Response.json({ ok: false, error: "Invalid contract result body." }, { status: 400 }); }
+      const market = String(body.market || "");
+      const cycle = Number(body.cycle);
+      const contractId = String(body.contractId || "");
+      if (!APPROVED_VOLATILITY_SYMBOLS.has(market) || !Number.isInteger(cycle) || !contractId || typeof body.won !== "boolean") {
+        return Response.json({ ok: false, error: "Invalid market, cycle, contract ID, or result." }, { status: 400 });
+      }
+      const result = this.differStrategy.recordContractResult(market, cycle, contractId, body.won);
+      if (!result.ok) return Response.json({ ok: false, error: "Contract result was already reported or is unknown." }, { status: 404 });
+      this.state.strategyLastExecution = { ...(this.state.strategyLastExecution || {}), market, cycle,
+        contractId, result: body.won ? "WIN" : "LOSS", wins: result.wins, losses: result.losses,
+        completed: result.completed === true, timestamp: new Date().toISOString() };
+      await this.save();
+      return Response.json({ ok: true, ...result });
     }
     if (url.pathname === "/status") {
       return Response.json({ ok: true, ...this.state, uptimeMode: "Cloudflare Durable Object background feed" });
@@ -312,7 +330,9 @@ export class MarketEngine extends DurableObject {
           action: evaluation.action,
           reason: evaluation.reason || histogram.reason,
           cycle: evaluation.cycle ?? null,
-          simulatedTradesThisCycle: this.differStrategy.stateFor(market).trades
+          simulatedTradesThisCycle: this.differStrategy.stateFor(market).trades,
+          winsThisCycle: this.differStrategy.stateFor(market).wins,
+          openContracts: this.differStrategy.stateFor(market).openContracts.length
         };
 
         if (evaluation.action === "BUY_INTENT") {
