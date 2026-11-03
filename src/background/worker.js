@@ -89,7 +89,13 @@ export class MarketEngine extends DurableObject {
       try { body = await request.json(); } catch { return Response.json({ ok: false, error: "Invalid acknowledgement body." }, { status: 400 }); }
       const pending = this.state.strategyPendingSignals || [];
       const index = pending.findIndex(item => item.signalId === body.signalId);
-      if (index < 0) return Response.json({ ok: false, error: "Signal is no longer pending or has expired." }, { status: 404 });
+      if (index < 0) {
+        const previous = this.state.strategyLastExecution;
+        if (body.accepted === true && previous?.signalId === body.signalId && previous.accepted === true) {
+          return Response.json({ ok: true, accepted: true, duplicate: true, execution: previous });
+        }
+        return Response.json({ ok: false, error: "Signal is no longer pending or has expired." }, { status: 404 });
+      }
       const signal = pending[index];
       if (body.market !== signal.market || Number(body.cycle) !== Number(signal.cycle)) return Response.json({ ok: false, error: "Signal acknowledgement did not match the pending signal." }, { status: 400 });
       let accepted = false;
