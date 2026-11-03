@@ -4,7 +4,7 @@ export async function onRequest({ request, env }) {
   }
   const url = new URL(request.url);
   const action = url.searchParams.get("action") || "status";
-  const allowed = new Set(["status", "start", "stop", "test", "ack", "stream"]);
+  const allowed = new Set(["status", "start", "stop", "test", "ack", "result", "stream"]);
   if (!allowed.has(action)) return Response.json({ ok: false, error: "Unsupported scanner action." }, { status: 400 });
   if (action === "stream") {
     if (request.method !== "GET" || request.headers.get("Upgrade") !== "websocket") return new Response("WebSocket upgrade required.", { status: 426 });
@@ -19,7 +19,7 @@ export async function onRequest({ request, env }) {
   const stub = env.MARKET_ENGINE.get(id);
   return stub.fetch("https://engine/" + action, {
     method: action === "status" ? "GET" : "POST",
-    body: action === "ack" ? request.body : undefined,
-    headers: action === "ack" ? { "content-type": "application/json" } : undefined
+    body: action === "ack" || action === "result" ? request.body : undefined,
+    headers: action === "ack" || action === "result" ? { "content-type": "application/json" } : undefined
   });
 }
