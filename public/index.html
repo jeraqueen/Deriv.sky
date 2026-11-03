@@ -94,7 +94,22 @@ let selectedDemoAccount = null;
 let tradeSocket = null;
 let wsRequestId = 100;
 let pendingWsRequests = new Map();
-let demoTradeUsed = false;
+let demoTradeUsed = localStorage.getItem("sky_demo_trade_used") === "1";
+let demoTradeAttempted = localStorage.getItem("sky_demo_trade_attempted") === "1";
+const TOKEN_KEY = "sky_deriv_access_token";
+const TOKEN_EXPIRY_KEY = "sky_deriv_token_expiry";
+const ACCOUNT_KEY = "sky_deriv_demo_account";
+function persistSession() {
+  if (accessToken && expiresAt > Date.now()) {
+    localStorage.setItem(TOKEN_KEY, accessToken);
+    localStorage.setItem(TOKEN_EXPIRY_KEY, String(expiresAt));
+  }
+}
+function clearPersistedSession() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(TOKEN_EXPIRY_KEY);
+  localStorage.removeItem(ACCOUNT_KEY);
+}
 
 function b64url(bytes) {
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
@@ -123,6 +138,7 @@ async function handleCallback() {
   const data = await response.json();
   if (!response.ok || !data.ok) throw new Error(data.error || "Login failed.");
   accessToken = data.access_token; expiresAt = Date.now() + Number(data.expires_in || 0)*1000;
+  persistSession();
   history.replaceState({}, "", "/");
   $("status").textContent = "Deriv authorization successful. Loading accounts…";
   $("disconnect").hidden = false;
@@ -156,6 +172,10 @@ async function loadAccounts() {
   $("status").textContent = demo.length ? "Connected to Deriv. Select your demo account." : "Connected, but Deriv returned no verified demo Options account. Real accounts are hidden and cannot be selected.";
   $("connection").textContent = "Authorized";
   $("accountType").textContent = demo.length ? "Demo only" : "No demo account";
+  if (demo.length) {
+    const saved = localStorage.getItem(ACCOUNT_KEY);
+    if (saved && demo.some(a => a.account_id === saved)) $("accounts").value = saved;
+  }
 }
 function wsRequest(payload) {
   if (!tradeSocket || tradeSocket.readyState !== WebSocket.OPEN) {
@@ -179,6 +199,7 @@ async function loadSelectedAccount() {
   const wsUrl = result.data?.url;
   if (!wsUrl || !wsUrl.includes("/ws/demo")) throw new Error("Deriv did not return a verified DEMO WebSocket URL.");
   selectedDemoAccount = {id, currency:selected.dataset.currency, accountType:"demo"};
+  localStorage.setItem(ACCOUNT_KEY, id);
   $("accountStatus").textContent = "Opening authenticated demo connection…";
   tradeSocket = new WebSocket(wsUrl);
   tradeSocket.onmessage = event => {
@@ -203,14 +224,15 @@ async function loadSelectedAccount() {
   });
   $("connection").textContent = "Connected";
   $("accountStatus").textContent = "Authenticated DEMO connection is active. Trading test is locked until a fresh DIFFER signal appears.";
-  $("demoTrade").disabled = false;
+  $("demoTrade").disabled = demoTradeUsed || demoTradeAttempted;
+  if (demoTradeUsed || demoTradeAttempted) $("tradeStatus").textContent = "The one-contract demo test has already been used or attempted. No repeat order is allowed.";
 }
 
 async function placeOneDemoDiffer() {
   const button = $("demoTrade");
   button.disabled = true;
   try {
-    if (demoTradeUsed) throw new Error("The one-contract demo test has already been used. No repeat order is allowed.");
+    if (demoTradeUsed || demoTradeAttempted) throw new Error("The one-contract demo test has already been used or attempted. No repeat order is allowed.");
     if (!selectedDemoAccount || selectedDemoAccount.accountType !== "demo") throw new Error("A verified demo account is required.");
     if (!tradeSocket || tradeSocket.readyState !== WebSocket.OPEN) throw new Error("Reconnect your demo account first.");
     const statusResponse = await fetch("/api/scanner?action=status", {cache:"no-store"});
@@ -232,23 +254,60 @@ async function placeOneDemoDiffer() {
     if (!proposal?.id || !Number.isFinite(Number(proposal.ask_price))) throw new Error("Deriv did not return a valid proposal. No purchase was made.");
     if (Number(proposal.ask_price) > 1.000001) throw new Error("Quoted stake exceeds the $1 limit. No purchase was made.");
     $("tradeStatus").textContent = "Quote received. Sending the single $1 demo purchase…";
+    demoTradeAttempted = true;
+    localStorage.setItem("sky_demo_trade_attempted", "1");
+    button.disabled = true;
     const buyMsg = await wsRequest({buy:proposal.id, price:1});
     const bought = buyMsg.buy;
     if (!bought?.contract_id) throw new Error("Deriv did not confirm a contract purchase.");
     demoTradeUsed = true;
+    localStorage.setItem("sky_demo_trade_used", "1");
     $("tradeStatus").textContent = "DEMO CONTRACT PLACED · " + signal.market + " · DIFFER barrier " + signal.barrier + " · 1 tick · Contract ID " + bought.contract_id;
     await wsRequest({proposal_open_contract:1, contract_id:bought.contract_id, subscribe:1});
   } catch (error) {
     $("tradeStatus").textContent = error.message + " No further order was sent.";
-    button.disabled = false;
+    button.disabled = demoTradeUsed || demoTradeAttempted;
   }
 }
 $("demoTrade").addEventListener("click", placeOneDemoDiffer);
 
 $("connect").addEventListener("click",()=>startLogin().catch(e=>$("status").textContent=e.message));
 $("load").addEventListener("click",()=>loadSelectedAccount().catch(e=>$("accountStatus").textContent=e.message));
-$("disconnect").addEventListener("click",()=>{accessToken=null;expiresAt=0;$("accountPanel").hidden=true;$("disconnect").hidden=true;$("status").textContent="Disconnected";});
-(async()=>{try{if(location.pathname==="/callback") await handleCallback();}catch(e){$("status").textContent=e.message;history.replaceState({},"","/");}})();
+$("disconnect").addEventListener("click",()=>{
+  accessToken=null; expiresAt=0; selectedDemoAccount=null;
+  if (tradeSocket) { try { tradeSocket.close(); } catch {} tradeSocket=null; }
+  clearPersistedSession();
+  $("accountPanel").hidden=true; $("disconnect").hidden=true;
+  $("connection").textContent="Not connected"; $("demoTrade").disabled=true;
+  $("status").textContent="Disconnected. Saved Deriv authorization and demo account were cleared.";
+});
+(async()=>{
+  try {
+    if (location.pathname === "/callback") { await handleCallback(); return; }
+    const savedToken = localStorage.getItem(TOKEN_KEY);
+    const savedExpiry = Number(localStorage.getItem(TOKEN_EXPIRY_KEY) || 0);
+    if (!savedToken || !savedExpiry || Date.now() >= savedExpiry) {
+      clearPersistedSession();
+      $("status").textContent = "Not connected. Connect with Deriv once; Sky Bot will remember this authorization until it expires.";
+      return;
+    }
+    accessToken = savedToken; expiresAt = savedExpiry;
+    $("status").textContent = "Restoring your saved Deriv authorization…";
+    $("disconnect").hidden = false;
+    await loadAccounts();
+    const savedAccount = localStorage.getItem(ACCOUNT_KEY);
+    if (savedAccount && Array.from($("accounts").options).some(o => o.value === savedAccount)) {
+      $("accounts").value = savedAccount;
+      await loadSelectedAccount();
+      $("status").textContent = "Deriv demo account automatically reconnected.";
+    } else {
+      $("status").textContent = "Deriv authorization restored. Select your demo account once to finish setup.";
+    }
+  } catch(e) {
+    if (/401|expired|Unauthorized/i.test(e.message)) clearPersistedSession();
+    $("status").textContent = "Automatic reconnect failed: " + e.message + " Please reconnect with Deriv if your authorization has expired.";
+  }
+})();
 </script>
 <script>
 async function scannerAction(action) {
