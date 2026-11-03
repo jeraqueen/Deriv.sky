@@ -44,6 +44,21 @@ export class MarketEngine extends DurableObject {
       await this.stop();
       return Response.json({ ok: true, ...this.state });
     }
+    if (url.pathname === "/test") {
+      const previousTicks = this.state.ticks;
+      await this.start();
+      await new Promise(resolve => setTimeout(resolve, 8000));
+      const receivedNewTick = this.state.ticks > previousTicks;
+      return Response.json({
+        ok: receivedNewTick,
+        test: "public-deriv-live-tick",
+        receivedNewTick,
+        ...this.state,
+        note: receivedNewTick
+          ? "Deriv returned live market ticks to the background service."
+          : "No new tick arrived during the 8-second test window. Check feed status and retry."
+      }, { status: receivedNewTick ? 200 : 503 });
+    }
     if (url.pathname === "/status") {
       return Response.json({ ok: true, ...this.state, uptimeMode: "Cloudflare Durable Object background feed" });
     }
