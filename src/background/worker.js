@@ -4,7 +4,8 @@ import { buildDigitHistogram, DIGIT_HISTORY_WINDOW } from "./digit-histogram.js"
 
 const DERIV_PUBLIC_WS = "wss://api.derivws.com/trading/v1/options/ws/public";
 const RECONNECT_MS = 5000;
-const HEARTBEAT_MS = 60_000;
+const HEARTBEAT_MS = 15_000;
+const STALE_TICK_MS = 30_000;
 
 function lastDigit(tick) {
   if (!tick || tick.quote === undefined || !Number.isInteger(tick.pip_size) ||
@@ -38,6 +39,8 @@ export class MarketEngine extends DurableObject {
       activeSymbolsReceived: false, rawSymbolCount: 0, matchedSymbolCount: 0,
       sampleSymbolNames: [], sampleSymbolKeys: [], sampleSymbolPreview: null,
       lastCloseCode: null, lastCloseReason: null,
+      tickSubscriptionRequestedAt: null, tickSubscriptionRequestId: null,
+      tickSubscriptionAckAt: null, tickSubscriptionCount: 0,
       strategyMode: "DRY_RUN_NO_ORDERS", strategyWindow: DIGIT_HISTORY_WINDOW,
       strategyReadyMarkets: 0, strategySignals: 0,
       strategyLastEvaluation: null, strategyLastSignal: null, strategyMarkets: []
@@ -177,12 +180,17 @@ export class MarketEngine extends DurableObject {
         String(item?.underlying_symbol_name || item?.display_name || item?.name || symbolCode(item) || "unnamed")
       );
       this.state.markets = markets.length;
-      this.state.status = markets.length ? "streaming" : "no-volatility-markets";
-      if (this.socket?.readyState === WebSocket.OPEN) {
-        for (const item of markets) {
-          const symbol = symbolCode(item);
-          if (symbol) this.socket.send(JSON.stringify({ ticks: symbol, subscribe: 1 }));
-        }
+      this.state.status = markets.length ? "subscribing" : "no-volatility-markets";
+      this.state.tickSubscriptionCount = 0;
+      if (this.socket?.readyState === WebSocket.OPEN && markets.length) {
+        const symbols = markets.map(symbolCode).filter(Boolean);
+        this.state.tickSubscriptionRequestedAt = new Date().toISOString();
+        this.state.tickSubscriptionRequestId = 2;
+        this.socket.send(JSON.stringify({
+          ticks: symbols,
+          subscribe: 1,
+          req_id: this.state.tickSubscriptionRequestId
+        }));
       }
       await this.save();
       return;
@@ -192,6 +200,9 @@ export class MarketEngine extends DurableObject {
       if (digit === null) return;
       const market = msg.tick.symbol || msg.tick.underlying_symbol;
       this.state.ticks += 1;
+      this.state.status = "streaming";
+      this.state.tickSubscriptionAckAt ||= new Date().toISOString();
+      this.state.tickSubscriptionCount += 1;
       this.state.latestMarket = market;
       this.state.latestDigit = digit;
       this.state.lastTickAt = new Date().toISOString();
@@ -275,7 +286,21 @@ export class MarketEngine extends DurableObject {
   async alarm() {
     await this.ready;
     if (!this.state.running) return;
-    if (!this.socket && !this.connecting) this.connect();
+    const lastTickMs = this.state.lastTickAt ? Date.parse(this.state.lastTickAt) : 0;
+    const referenceMs = lastTickMs || (this.state.connectedAt ? Date.parse(this.state.connectedAt) : 0);
+    const stale = referenceMs > 0 && Date.now() - referenceMs > STALE_TICK_MS;
+    if (stale && this.socket) {
+      this.state.status = "reconnecting";
+      this.state.lastError = "No market tick received for 30 seconds; reconnecting feed.";
+      const staleSocket = this.socket;
+      this.socket = null;
+      this.connecting = false;
+      try { staleSocket.close(1011, "Stale tick feed"); } catch {}
+      await this.save();
+      this.scheduleReconnect();
+    } else if (!this.socket && !this.connecting) {
+      this.connect();
+    }
     await this.ctx.storage.setAlarm(Date.now() + HEARTBEAT_MS);
   }
 }
