@@ -44,6 +44,11 @@
       <div class="metric"><span class="muted">Trading mode</span><b>Disabled</b></div>
     </div>
     <div id="accountStatus" class="status"></div>
+    <div class="row" style="margin-top:14px">
+      <button id="demoTrade" disabled>Place ONE $1 demo DIFFER contract</button>
+    </div>
+    <p class="small warn">Safety: demo account only, $1 stake, one contract maximum. The button requires a fresh strategy signal (no older than 10 seconds). No automatic repeat trades.</p>
+    <div id="tradeStatus" class="status">Connect and load a verified demo account to enable the test.</div>
   </section>
   <section class="panel" id="marketPanel">
     <div class="row" style="justify-content:space-between">
@@ -85,6 +90,11 @@ const AUTH_URL = "https://auth.deriv.com/oauth2/auth";
 const $ = id => document.getElementById(id);
 let accessToken = null;
 let expiresAt = 0;
+let selectedDemoAccount = null;
+let tradeSocket = null;
+let wsRequestId = 100;
+let pendingWsRequests = new Map();
+let demoTradeUsed = false;
 
 function b64url(bytes) {
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
@@ -138,6 +148,7 @@ async function loadAccounts() {
     const option = document.createElement("option");
     option.value = a.account_id;
     option.dataset.accountType = String(a.account_type || "").toLowerCase();
+    option.dataset.currency = String(a.currency || "");
     option.textContent = a.account_id + " · " + (a.currency || "") + " · DEMO";
     $("accounts").appendChild(option);
   });
@@ -146,20 +157,94 @@ async function loadAccounts() {
   $("connection").textContent = "Authorized";
   $("accountType").textContent = demo.length ? "Demo only" : "No demo account";
 }
+function wsRequest(payload) {
+  if (!tradeSocket || tradeSocket.readyState !== WebSocket.OPEN) {
+    return Promise.reject(new Error("Demo trading connection is not open."));
+  }
+  const req_id = ++wsRequestId;
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => { pendingWsRequests.delete(req_id); reject(new Error("Deriv did not respond in time.")); }, 12000);
+    pendingWsRequests.set(req_id, {resolve, reject, timeout});
+    tradeSocket.send(JSON.stringify({...payload, req_id}));
+  });
+}
 async function loadSelectedAccount() {
   const selected = $("accounts").selectedOptions[0];
   const id = $("accounts").value;
   if (!id || !selected || selected.dataset.accountType !== "demo") {
     throw new Error("Safety lock: select a verified demo account. Real accounts cannot be used.");
   }
+  if (tradeSocket) { try { tradeSocket.close(); } catch {} tradeSocket = null; }
   const result = await api("/api/accounts/"+encodeURIComponent(id)+"/otp","POST");
   const wsUrl = result.data?.url;
-  if (!wsUrl) throw new Error("Deriv did not return a WebSocket URL.");
-  const ws = new WebSocket(wsUrl);
-  $("accountStatus").textContent = "Opening secure demo connection…";
-  ws.onopen = () => { $("connection").textContent = "Connected"; $("accountStatus").textContent = "Secure demo WebSocket connected. Trading is still disabled."; ws.close(); };
-  ws.onerror = () => { $("accountStatus").textContent = "WebSocket connection failed. Please reconnect and try again."; };
+  if (!wsUrl || !wsUrl.includes("/ws/demo")) throw new Error("Deriv did not return a verified DEMO WebSocket URL.");
+  selectedDemoAccount = {id, currency:selected.dataset.currency, accountType:"demo"};
+  $("accountStatus").textContent = "Opening authenticated demo connection…";
+  tradeSocket = new WebSocket(wsUrl);
+  tradeSocket.onmessage = event => {
+    let msg; try { msg = JSON.parse(event.data); } catch { return; }
+    const pending = pendingWsRequests.get(msg.req_id);
+    if (pending) {
+      clearTimeout(pending.timeout); pendingWsRequests.delete(msg.req_id);
+      if (msg.error) pending.reject(new Error(msg.error.message || "Deriv request failed."));
+      else pending.resolve(msg);
+    }
+    if (msg.msg_type === "proposal_open_contract" && msg.proposal_open_contract) {
+      const contract = msg.proposal_open_contract;
+      $("tradeStatus").textContent = contract.is_sold
+        ? "Contract settled: " + (contract.status || "completed") + " · P/L " + String(contract.profit ?? "not supplied") + " " + selectedDemoAccount.currency
+        : "Demo contract is open · Contract ID " + String(contract.contract_id || "");
+    }
+  };
+  await new Promise((resolve,reject) => {
+    const timer = setTimeout(()=>reject(new Error("Demo WebSocket connection timed out.")),12000);
+    tradeSocket.onopen = () => { clearTimeout(timer); resolve(); };
+    tradeSocket.onerror = () => { clearTimeout(timer); reject(new Error("Demo WebSocket connection failed.")); };
+  });
+  $("connection").textContent = "Connected";
+  $("accountStatus").textContent = "Authenticated DEMO connection is active. Trading test is locked until a fresh DIFFER signal appears.";
+  $("demoTrade").disabled = false;
 }
+
+async function placeOneDemoDiffer() {
+  const button = $("demoTrade");
+  button.disabled = true;
+  try {
+    if (demoTradeUsed) throw new Error("The one-contract demo test has already been used. No repeat order is allowed.");
+    if (!selectedDemoAccount || selectedDemoAccount.accountType !== "demo") throw new Error("A verified demo account is required.");
+    if (!tradeSocket || tradeSocket.readyState !== WebSocket.OPEN) throw new Error("Reconnect your demo account first.");
+    const statusResponse = await fetch("/api/scanner?action=status", {cache:"no-store"});
+    const status = await statusResponse.json();
+    const signal = status.strategyLastSignal;
+    const ageMs = signal?.timestamp ? Date.now() - Date.parse(signal.timestamp) : Infinity;
+    const approved = new Set(["1HZ10V","1HZ15V","1HZ25V","1HZ30V","1HZ50V","1HZ75V","1HZ90V","1HZ100V","R_10","R_25","R_50","R_75","R_100"]);
+    if (!status.running || status.status !== "streaming") throw new Error("Market scanner is not currently streaming.");
+    if (!signal || signal.orderPlaced !== false || ageMs < 0 || ageMs > 10000) throw new Error("No fresh DIFFER signal from the last 10 seconds. No contract was placed.");
+    if (!approved.has(signal.market) || !Number.isInteger(Number(signal.barrier)) || Number(signal.barrier) < 0 || Number(signal.barrier) > 9) throw new Error("Signal failed market or barrier safety checks.");
+    if (!selectedDemoAccount.currency) throw new Error("Deriv account currency is missing.");
+    $("tradeStatus").textContent = "Requesting a $1 demo DIFFER quote for " + signal.market + " barrier " + signal.barrier + "…";
+    const proposalMsg = await wsRequest({
+      proposal:1, amount:1, basis:"stake", contract_type:"DIGITDIFF",
+      currency:selectedDemoAccount.currency, duration:1, duration_unit:"t",
+      underlying_symbol:signal.market, barrier:String(signal.barrier)
+    });
+    const proposal = proposalMsg.proposal;
+    if (!proposal?.id || !Number.isFinite(Number(proposal.ask_price))) throw new Error("Deriv did not return a valid proposal. No purchase was made.");
+    if (Number(proposal.ask_price) > 1.000001) throw new Error("Quoted stake exceeds the $1 limit. No purchase was made.");
+    $("tradeStatus").textContent = "Quote received. Sending the single $1 demo purchase…";
+    const buyMsg = await wsRequest({buy:proposal.id, price:1});
+    const bought = buyMsg.buy;
+    if (!bought?.contract_id) throw new Error("Deriv did not confirm a contract purchase.");
+    demoTradeUsed = true;
+    $("tradeStatus").textContent = "DEMO CONTRACT PLACED · " + signal.market + " · DIFFER barrier " + signal.barrier + " · 1 tick · Contract ID " + bought.contract_id;
+    await wsRequest({proposal_open_contract:1, contract_id:bought.contract_id, subscribe:1});
+  } catch (error) {
+    $("tradeStatus").textContent = error.message + " No further order was sent.";
+    button.disabled = false;
+  }
+}
+$("demoTrade").addEventListener("click", placeOneDemoDiffer);
+
 $("connect").addEventListener("click",()=>startLogin().catch(e=>$("status").textContent=e.message));
 $("load").addEventListener("click",()=>loadSelectedAccount().catch(e=>$("accountStatus").textContent=e.message));
 $("disconnect").addEventListener("click",()=>{accessToken=null;expiresAt=0;$("accountPanel").hidden=true;$("disconnect").hidden=true;$("status").textContent="Disconnected";});
