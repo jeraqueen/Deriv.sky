@@ -165,7 +165,7 @@ function renderContractBoard() {
     const head = document.createElement("div");
     head.className = "contract-head";
     const name = document.createElement("span");
-    name.textContent = (c.market || "Market") + " · DIFFER " + String(c.barrier ?? "—") + " · 1 tick";
+    name.textContent = (c.market || "Market") + " · " + String(c.contractType || "DIFFER") + " " + String(c.barrier ?? "—") + " · 1 tick";
     const result = document.createElement("span");
     result.textContent = c.isSold ? ((Number(c.profit) > 0 ? "WIN" : "LOSS") + " · " + (Number(c.profit) > 0 ? "+" : "") + Number(c.profit).toFixed(2) + " USD") : "OPEN";
     result.className = c.isSold ? (Number(c.profit) > 0 ? "positive" : "negative") : "";
@@ -358,12 +358,10 @@ async function loadSelectedAccount() {
   for (const record of contractRecords.filter(c => !c.isSold).slice(0,50)) {
     try { await wsRequest({proposal_open_contract:1, contract_id:Number(record.contractId), subscribe:1}); } catch {}
   }
-  $("accountStatus").textContent = "Authenticated DEMO connection is active. Automatic $1 DIFFER execution is " + (autoDemoTradingEnabled ? "enabled." : "paused.");
+  $("accountStatus").textContent = "Your USD demo account is connected. Press Start Board to begin.";
   updateAutoToggle();
   connectSignalStream();
-  $("tradeStatus").textContent = autoDemoTradingEnabled
-    ? "Automatic demo execution is active. Waiting for the next fresh valid DIFFER signal…"
-    : "Automatic demo execution is paused. Press Resume to continue.";
+  $("tradeStatus").textContent = "Demo account loaded. Press Start Board when you are ready to begin.";
 }
 
 function updateAutoToggle() {
