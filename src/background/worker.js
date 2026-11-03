@@ -152,7 +152,14 @@ export class MarketEngine extends DurableObject {
     this.state.lastMessageType = msg.msg_type || "unknown";
     if (msg.error || msg.errors?.length) {
       this.state.lastError = msg.error?.message || msg.errors?.[0]?.message || "Deriv API error";
-      this.state.status = "deriv-api-error";
+      this.state.status = "reconnecting";
+      const failedSocket = this.socket;
+      this.socket = null;
+      this.connecting = false;
+      if (failedSocket) {
+        try { failedSocket.close(1011, "Deriv API error; reconnecting"); } catch {}
+      }
+      if (this.state.running) await this.scheduleReconnect();
       await this.save();
       return;
     }
@@ -282,7 +289,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const stub = await engine(env);
-    const path = ["/start", "/stop", "/status", "/ensure"].includes(url.pathname) ? url.pathname : "/status";
+    const path = ["/start", "/stop", "/status", "/ensure", "/test"].includes(url.pathname) ? url.pathname : "/status";
     return stub.fetch("https://engine" + path);
   },
   async scheduled(_event, env, ctx) {
