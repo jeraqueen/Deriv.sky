@@ -111,6 +111,13 @@ let wsRequestId = 100;
 let pendingWsRequests = new Map();
 let autoDemoTradingEnabled = localStorage.getItem("sky_auto_demo_enabled") !== "0";
 let autoTradeBusy = false;
+let autoStatusBusy = false;
+let signalSocket = null;
+let signalReconnectDelay = 1000;
+let signalReconnectTimer = null;
+let executionQueue = [];
+let queuedSignalIds = new Set();
+let invalidatedSignalIds = new Set();
 let processedSignalIds = new Set();
 try { processedSignalIds = new Set(JSON.parse(localStorage.getItem("sky_auto_processed_signals") || "[]")); } catch { processedSignalIds = new Set(); }
 let contractRecords = [];
@@ -157,7 +164,9 @@ function renderContractBoard() {
     head.append(name,result);
     const meta = document.createElement("div");
     meta.className = "contract-meta";
-    meta.textContent = "Contract ID: " + String(c.contractId) + " · " + new Date(c.timestamp || Date.now()).toLocaleString() + (c.status ? " · " + c.status : "");
+    const timing = Number.isFinite(Number(c.totalExecutionMs))
+      ? " · Execution " + Number(c.totalExecutionMs) + "ms (quote " + Number(c.proposalMs || 0) + "ms, buy " + Number(c.buyMs || 0) + "ms)" : "";
+    meta.textContent = "Contract ID: " + String(c.contractId) + " · " + new Date(c.timestamp || Date.now()).toLocaleString() + (c.status ? " · " + c.status : "") + timing;
     card.append(head,meta);
     list.appendChild(card);
   }
@@ -256,13 +265,13 @@ async function loadAccounts() {
     if (saved && demo.some(a => a.account_id === saved)) $("accounts").value = saved;
   }
 }
-function wsRequest(payload) {
+function wsRequest(payload, timeoutMs = 12000) {
   if (!tradeSocket || tradeSocket.readyState !== WebSocket.OPEN) {
     return Promise.reject(new Error("Demo trading connection is not open."));
   }
   const req_id = ++wsRequestId;
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => { pendingWsRequests.delete(req_id); reject(new Error("Deriv did not respond in time.")); }, 12000);
+    const timeout = setTimeout(() => { pendingWsRequests.delete(req_id); reject(new Error("Deriv did not respond in time.")); }, timeoutMs);
     pendingWsRequests.set(req_id, {resolve, reject, timeout});
     tradeSocket.send(JSON.stringify({...payload, req_id}));
   });
@@ -309,6 +318,7 @@ async function loadSelectedAccount() {
   }
   $("accountStatus").textContent = "Authenticated DEMO connection is active. Automatic $1 DIFFER execution is " + (autoDemoTradingEnabled ? "enabled." : "paused.");
   updateAutoToggle();
+  connectSignalStream();
   $("tradeStatus").textContent = autoDemoTradingEnabled
     ? "Automatic demo execution is active. Waiting for the next fresh valid DIFFER signal…"
     : "Automatic demo execution is paused. Press Resume to continue.";
@@ -319,6 +329,59 @@ function updateAutoToggle() {
   if (!button) return;
   button.textContent = autoDemoTradingEnabled ? "Pause automatic trading" : "Resume automatic trading";
   $("tradingMode").textContent = autoDemoTradingEnabled ? "AUTO DEMO ON" : "PAUSED";
+}
+function connectSignalStream() {
+  if (!selectedDemoAccount || selectedDemoAccount.accountType !== "demo" ||
+      signalSocket?.readyState === WebSocket.OPEN || signalSocket?.readyState === WebSocket.CONNECTING) return;
+  if (signalReconnectTimer) { clearTimeout(signalReconnectTimer); signalReconnectTimer = null; }
+  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  signalSocket = new WebSocket(scheme + "//" + location.host + "/api/scanner?action=stream");
+  signalSocket.onopen = () => {
+    signalReconnectDelay = 1000;
+    $("tradeStatus").textContent = "Real-time signal stream connected. Waiting for fresh DIFFER signals…";
+  };
+  signalSocket.onmessage = event => {
+    if (event.data === "pong") return;
+    let message;
+    try { message = JSON.parse(event.data); } catch { return; }
+    if (message.type === "signal" && message.signal) enqueueAutomaticSignal(message.signal);
+    if (message.type === "signal_invalidated" && message.signalId) {
+      invalidatedSignalIds.add(message.signalId);
+      executionQueue = executionQueue.filter(item => item.signalId !== message.signalId);
+      queuedSignalIds.delete(message.signalId);
+    }
+  };
+  signalSocket.onerror = () => { try { signalSocket?.close(); } catch {} };
+  signalSocket.onclose = () => {
+    signalSocket = null;
+    if (selectedDemoAccount?.accountType === "demo") {
+      const delay = signalReconnectDelay;
+      signalReconnectDelay = Math.min(signalReconnectDelay * 2, 15000);
+      signalReconnectTimer = setTimeout(connectSignalStream, delay);
+    }
+  };
+}
+function enqueueAutomaticSignal(signal) {
+  if (!signal?.signalId || processedSignalIds.has(signal.signalId) || queuedSignalIds.has(signal.signalId) ||
+      invalidatedSignalIds.has(signal.signalId) || localStorage.getItem("sky_auto_attempted_" + signal.signalId) === "1") return;
+  executionQueue.push({ ...signal, _receivedAt: Date.now() });
+  queuedSignalIds.add(signal.signalId);
+  drainAutomaticQueue();
+}
+async function drainAutomaticQueue() {
+  if (autoTradeBusy) return;
+  autoTradeBusy = true;
+  try {
+    while (executionQueue.length && autoDemoTradingEnabled) {
+      const signal = executionQueue.shift();
+      queuedSignalIds.delete(signal.signalId);
+      if (invalidatedSignalIds.has(signal.signalId)) { rememberSignal(signal.signalId); continue; }
+      await executeAutomaticSignal(signal);
+    }
+  } finally {
+    autoTradeBusy = false;
+    if (executionQueue.length && autoDemoTradingEnabled) drainAutomaticQueue();
+  }
 }
 function rememberSignal(signalId) {
   processedSignalIds.add(signalId);
@@ -335,9 +398,13 @@ async function acknowledgeSignal(signal, accepted, detail) {
   return data;
 }
 async function executeAutomaticSignal(signal) {
+  const receivedAt = Number(signal._receivedAt) || Date.parse(signal.timestamp);
   const ageMs = Date.now() - Date.parse(signal.timestamp);
   const approved = new Set(["1HZ10V","1HZ15V","1HZ25V","1HZ30V","1HZ50V","1HZ75V","1HZ90V","1HZ100V","R_10","R_25","R_50","R_75","R_100"]);
-  if (ageMs < 0 || ageMs > 10000) return;
+  if (ageMs < 0 || ageMs > 6000 || invalidatedSignalIds.has(signal.signalId)) {
+    rememberSignal(signal.signalId);
+    return;
+  }
   if (!approved.has(signal.market) || signal.contractType !== "DIGITDIFF" ||
       signal.duration !== 1 || signal.durationUnit !== "t" ||
       !Number.isInteger(Number(signal.barrier)) || Number(signal.barrier) < 0 || Number(signal.barrier) > 9) {
@@ -349,12 +416,14 @@ async function executeAutomaticSignal(signal) {
       selectedDemoAccount.currency !== "USD" || !tradeSocket || tradeSocket.readyState !== WebSocket.OPEN) return;
   if (localStorage.getItem("sky_auto_attempted_" + signal.signalId) === "1") return;
   try {
-    $("tradeStatus").textContent = "Fresh signal: " + signal.market + " DIFFER barrier " + signal.barrier + ". Requesting a $1 USD demo quote…";
+    const proposalRequestedAt = Date.now();
+    $("tradeStatus").textContent = "FRESH SIGNAL · " + signal.market + " DIFFER " + signal.barrier + " · requesting quote immediately…";
     const proposalMsg = await wsRequest({
       proposal:1, amount:1, basis:"stake", contract_type:"DIGITDIFF",
       currency:"USD", duration:1, duration_unit:"t",
       underlying_symbol:signal.market, barrier:String(signal.barrier)
-    });
+    }, 5000);
+    const proposalReceivedAt = Date.now();
     const proposal = proposalMsg.proposal;
     if (!proposal?.id || !Number.isFinite(Number(proposal.ask_price))) {
       rememberSignal(signal.signalId);
@@ -368,20 +437,19 @@ async function executeAutomaticSignal(signal) {
       $("tradeStatus").textContent = "Signal skipped: quoted stake exceeded $1 USD.";
       return;
     }
-    const confirmResponse = await fetch("/api/scanner?action=status", {cache:"no-store"});
-    const confirmStatus = await confirmResponse.json();
-    const stillPending = Array.isArray(confirmStatus.strategyPendingSignals) &&
-      confirmStatus.strategyPendingSignals.some(item => item.signalId === signal.signalId);
-    if (!stillPending || Date.now() - Date.parse(signal.timestamp) > 10000) {
+    if (invalidatedSignalIds.has(signal.signalId) || Date.now() - Date.parse(signal.timestamp) > 6000) {
       rememberSignal(signal.signalId);
-      $("tradeStatus").textContent = "Signal expired or its setup changed before purchase. No contract was sent.";
+      try { await acknowledgeSignal(signal, false, "Signal invalidated or expired while the proposal was being prepared."); } catch {}
+      $("tradeStatus").textContent = "Signal expired or setup changed before purchase. No contract was sent.";
       return;
     }
     // Persist the attempt before sending buy. If the response is lost, never repeat blindly.
     localStorage.setItem("sky_auto_attempted_" + signal.signalId, "1");
     rememberSignal(signal.signalId);
-    $("tradeStatus").textContent = "Quote accepted. Sending one $1 DEMO DIFFER contract…";
-    const buyMsg = await wsRequest({buy:proposal.id, price:1});
+    const buySentAt = Date.now();
+    $("tradeStatus").textContent = "Fresh quote accepted. Sending $1 DEMO DIFFER immediately…";
+    const buyMsg = await wsRequest({buy:proposal.id, price:1}, 5000);
+    const buyConfirmedAt = Date.now();
     const bought = buyMsg.buy;
     if (!bought?.contract_id) {
       $("tradeStatus").textContent = "Purchase response was not confirmed. Check Deriv demo transactions before any retry.";
@@ -390,7 +458,12 @@ async function executeAutomaticSignal(signal) {
     addConfirmedContract({
       contractId:String(bought.contract_id), market:signal.market, barrier:signal.barrier,
       timestamp:bought.purchase_time ? new Date(Number(bought.purchase_time) * 1000).toISOString() : new Date().toISOString(),
-      stake:1, currency:"USD"
+      stake:1, currency:"USD",
+      signalDetectedAt:signal.timestamp,
+      signalReceivedAt:new Date(receivedAt).toISOString(),
+      proposalMs:proposalReceivedAt - proposalRequestedAt,
+      buyMs:buyConfirmedAt - buySentAt,
+      totalExecutionMs:buyConfirmedAt - receivedAt
     });
     await acknowledgeSignal(signal, true, "Deriv confirmed contract " + bought.contract_id);
     $("tradeStatus").textContent = "DEMO CONTRACT PLACED · " + signal.market + " · DIFFER " + signal.barrier + " · 1 tick · Contract ID " + bought.contract_id;
@@ -407,10 +480,10 @@ async function executeAutomaticSignal(signal) {
   }
 }
 async function monitorAutomaticTrading() {
-  if (autoTradeBusy || !autoDemoTradingEnabled || !selectedDemoAccount ||
+  if (autoStatusBusy || !autoDemoTradingEnabled || !selectedDemoAccount ||
       selectedDemoAccount.accountType !== "demo" || selectedDemoAccount.currency !== "USD" ||
       !tradeSocket || tradeSocket.readyState !== WebSocket.OPEN) return;
-  autoTradeBusy = true;
+  autoStatusBusy = true;
   try {
     const response = await fetch("/api/scanner?action=status", {cache:"no-store"});
     const status = await response.json();
@@ -425,7 +498,7 @@ async function monitorAutomaticTrading() {
         Date.now() - Date.parse(s.timestamp) >= 0 &&
         Date.now() - Date.parse(s.timestamp) <= 10000)
       .sort((a,b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))[0];
-    if (next) await executeAutomaticSignal(next);
+    if (next) enqueueAutomaticSignal(next);
     else {
       const current = $("tradeStatus").textContent;
       if (!/DEMO CONTRACT PLACED|Contract settled|Demo contract is open|Purchase response is uncertain/.test(current)) {
@@ -435,7 +508,7 @@ async function monitorAutomaticTrading() {
   } catch (error) {
     $("tradeStatus").textContent = "Auto execution check: " + error.message;
   } finally {
-    autoTradeBusy = false;
+    autoStatusBusy = false;
   }
 }
 $("autoToggle").addEventListener("click", () => {
@@ -445,7 +518,7 @@ $("autoToggle").addEventListener("click", () => {
   $("tradeStatus").textContent = autoDemoTradingEnabled
     ? "Automatic $1 USD DEMO trading resumed."
     : "Automatic trading paused. The background scanner continues running.";
-  if (autoDemoTradingEnabled) monitorAutomaticTrading();
+  if (autoDemoTradingEnabled) { monitorAutomaticTrading(); drainAutomaticQueue(); }
 });
 
 $("connect").addEventListener("click",()=>startLogin().catch(e=>$("status").textContent=e.message));
@@ -453,6 +526,8 @@ $("load").addEventListener("click",()=>loadSelectedAccount().catch(e=>$("account
 $("disconnect").addEventListener("click",()=>{
   accessToken=null; expiresAt=0; selectedDemoAccount=null;
   if (tradeSocket) { try { tradeSocket.close(); } catch {} tradeSocket=null; }
+  if (signalSocket) { try { signalSocket.close(); } catch {} signalSocket=null; }
+  if (signalReconnectTimer) { clearTimeout(signalReconnectTimer); signalReconnectTimer=null; }
   clearPersistedSession();
   $("accountPanel").hidden=true; $("disconnect").hidden=true;
   $("connection").textContent="Not connected";
@@ -523,7 +598,7 @@ $("feedStop").addEventListener("click", async () => {
 scannerAction("status").catch(e => $("feedStatus").textContent = e.message);
 updateAutoToggle();
 renderContractBoard();
-setInterval(monitorAutomaticTrading, 1500);
+setInterval(monitorAutomaticTrading, 5000);
 </script>
 </body>
 </html>
