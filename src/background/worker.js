@@ -23,7 +23,7 @@ export class MarketEngine extends DurableObject {
     this.socket = null;
     this.connecting = false;
     this.state = {
-      running: false, status: "starting", markets: 0, ticks: 0,
+      running: false, enabled: true, status: "starting", markets: 0, ticks: 0,
       latestMarket: null, latestDigit: null, lastTickAt: null,
       connectedAt: null, lastError: null
     };
@@ -36,6 +36,9 @@ export class MarketEngine extends DurableObject {
   async fetch(request) {
     await this.ready;
     const url = new URL(request.url);
+    if (url.pathname === "/ensure" && !this.state.enabled) {
+      return Response.json({ ok: true, ...this.state });
+    }
     if (url.pathname === "/start" || url.pathname === "/ensure") {
       await this.start();
       return Response.json({ ok: true, ...this.state });
@@ -70,6 +73,7 @@ export class MarketEngine extends DurableObject {
   }
 
   async start() {
+    this.state.enabled = true;
     this.state.running = true;
     if (!this.socket && !this.connecting) this.connect();
     await this.ctx.storage.setAlarm(Date.now() + HEARTBEAT_MS);
@@ -78,6 +82,7 @@ export class MarketEngine extends DurableObject {
 
   async stop() {
     this.state.running = false;
+    this.state.enabled = false;
     this.state.status = "stopped";
     if (this.socket) {
       try { this.socket.close(1000, "Scanner stopped"); } catch {}
