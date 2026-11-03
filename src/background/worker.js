@@ -58,7 +58,7 @@ export class MarketEngine extends DurableObject {
   async fetch(request) {
     await this.ready;
     const url = new URL(request.url);
-    if (url.pathname === "/stream") {
+    if (url.pathname === "/stream" || (url.pathname === "/api/scanner" && url.searchParams.get("action") === "stream")) {
       if (request.headers.get("Upgrade") !== "websocket") return new Response("WebSocket upgrade required.", { status: 426 });
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
@@ -393,7 +393,7 @@ export default {
     const path = ["/start", "/stop", "/status", "/ensure", "/test", "/ack", "/stream"].includes(url.pathname) ? url.pathname : "/status";
     if (path === "/stream") {
       if (request.headers.get("Upgrade") !== "websocket") return new Response("WebSocket upgrade required.", { status: 426 });
-      return stub.fetch(new Request("https://engine/stream", { method: "GET", headers: request.headers }));
+      return stub.fetch(request);
     }
     return stub.fetch("https://engine" + path);
   },
