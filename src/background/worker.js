@@ -58,6 +58,15 @@ export class MarketEngine extends DurableObject {
   async fetch(request) {
     await this.ready;
     const url = new URL(request.url);
+    if (url.pathname === "/stream") {
+      if (request.headers.get("Upgrade") !== "websocket") return new Response("WebSocket upgrade required.", { status: 426 });
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair);
+      this.ctx.acceptWebSocket(server);
+      server.serializeAttachment({ role: "signal-client", connectedAt: Date.now() });
+      server.send(JSON.stringify({ type: "ready", running: this.state.running, status: this.state.status, serverTime: new Date().toISOString() }));
+      return new Response(null, { status: 101, webSocket: client });
+    }
     if (url.pathname === "/ensure" && !this.state.enabled) {
       return Response.json({ ok: true, ...this.state });
     }
@@ -119,6 +128,22 @@ export class MarketEngine extends DurableObject {
   async save() {
     await this.ctx.storage.put("state", this.state);
     await this.ctx.storage.put("strategyState", this.differStrategy.snapshot());
+  }
+
+  broadcastRealtime(event) {
+    const payload = JSON.stringify(event);
+    for (const ws of this.ctx.getWebSockets()) {
+      try { if (ws.readyState === WebSocket.OPEN) ws.send(payload); }
+      catch { try { ws.close(1011, "Signal stream send failed"); } catch {} }
+    }
+  }
+
+  async webSocketMessage(ws, message) {
+    if (message === "ping") { try { ws.send("pong"); } catch {} }
+  }
+
+  async webSocketClose(ws, code, reason) {
+    try { ws.close(code, reason); } catch {}
   }
 
   async start() {
@@ -233,6 +258,10 @@ export class MarketEngine extends DurableObject {
       for (const item of expiredSignals) this.differStrategy.releasePending(item.market, item.cycle);
       this.state.strategyPendingSignals = pendingSignals.filter(item => now - Date.parse(item.timestamp) <= 10000);
       let pendingQueueChanged = expiredSignals.length > 0;
+      const realtimeEvents = expiredSignals.map(item => ({
+        type: "signal_invalidated", signalId: item.signalId, market: item.market,
+        reason: "Signal expired before execution."
+      }));
       const digit = lastDigit(msg.tick);
       if (digit === null) return;
       const market = msg.tick.symbol || msg.tick.underlying_symbol;
@@ -257,9 +286,15 @@ export class MarketEngine extends DurableObject {
           market, bars: histogram.bars, currentDigit: digit, tickId
         });
         if (evaluation.action !== "PENDING") {
-          const before = this.state.strategyPendingSignals.length;
+          const removedSignals = this.state.strategyPendingSignals.filter(item => item.market === market);
           this.state.strategyPendingSignals = this.state.strategyPendingSignals.filter(item => item.market !== market);
-          if (this.state.strategyPendingSignals.length !== before) pendingQueueChanged = true;
+          if (removedSignals.length) {
+            pendingQueueChanged = true;
+            for (const item of removedSignals) realtimeEvents.push({
+              type: "signal_invalidated", signalId: item.signalId, market,
+              reason: evaluation.reason || "The market setup changed before execution."
+            });
+          }
         }
         let diagnostic = {
           market,
@@ -297,6 +332,7 @@ export class MarketEngine extends DurableObject {
           diagnostic.signalId = signalId;
           diagnostic.simulatedTradesThisCycle = this.differStrategy.stateFor(market).trades;
           this.state.strategyLastSignal = signal;
+          realtimeEvents.push({ type: "signal", signal });
         }
 
         this.marketDiagnostics.set(market, diagnostic);
@@ -304,6 +340,7 @@ export class MarketEngine extends DurableObject {
         this.state.strategyMarkets = Array.from(this.marketDiagnostics.values());
         this.state.strategyLastEvaluation = diagnostic;
         if (pendingQueueChanged) await this.save();
+        for (const event of realtimeEvents) this.broadcastRealtime(event);
       }
       // Tick processing stays in memory; authenticated demo execution is handled by the connected browser.
     }
@@ -353,7 +390,11 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const stub = await engine(env);
-    const path = ["/start", "/stop", "/status", "/ensure", "/test", "/ack"].includes(url.pathname) ? url.pathname : "/status";
+    const path = ["/start", "/stop", "/status", "/ensure", "/test", "/ack", "/stream"].includes(url.pathname) ? url.pathname : "/status";
+    if (path === "/stream") {
+      if (request.headers.get("Upgrade") !== "websocket") return new Response("WebSocket upgrade required.", { status: 426 });
+      return stub.fetch(new Request("https://engine/stream", { method: "GET", headers: request.headers }));
+    }
     return stub.fetch("https://engine" + path);
   },
   async scheduled(_event, env, ctx) {
