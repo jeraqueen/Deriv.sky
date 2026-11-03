@@ -13,8 +13,13 @@ function lastDigit(tick) {
   return digits.length ? Number(digits.at(-1)) : null;
 }
 function isVolatility(item) {
-  const label = String(item?.display_name || item?.name || "");
-  return /volatility/i.test(label) && /index/i.test(label);
+  // Deriv's active_symbols labels vary by market/version. Do not require
+  // the word "Index" to be present; inspect all identifying fields.
+  const identity = [item?.display_name, item?.name, item?.symbol]
+    .filter(Boolean).join(" ");
+  return /volatility/i.test(identity) ||
+    /^(?:1HZ)?(?:10|15|25|30|50|75|90|100)V$/i.test(String(item?.symbol || "")) ||
+    /^R_(?:10|25|50|75|100)$/i.test(String(item?.symbol || ""));
 }
 
 export class MarketEngine extends DurableObject {
@@ -25,7 +30,9 @@ export class MarketEngine extends DurableObject {
     this.state = {
       running: false, enabled: true, status: "starting", markets: 0, ticks: 0,
       latestMarket: null, latestDigit: null, lastTickAt: null,
-      connectedAt: null, lastError: null
+      connectedAt: null, lastError: null, lastMessageType: null,
+      activeSymbolsReceived: false, rawSymbolCount: 0, matchedSymbolCount: 0,
+      sampleSymbolNames: []
     };
     this.ready = this.ctx.blockConcurrencyWhile(async () => {
       const saved = await this.ctx.storage.get("state");
@@ -132,13 +139,22 @@ export class MarketEngine extends DurableObject {
   async onMessage(raw) {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
-    if (msg.error) {
-      this.state.lastError = msg.error.message || "Deriv API error";
+    this.state.lastMessageType = msg.msg_type || "unknown";
+    if (msg.error || msg.errors?.length) {
+      this.state.lastError = msg.error?.message || msg.errors?.[0]?.message || "Deriv API error";
+      this.state.status = "deriv-api-error";
       await this.save();
       return;
     }
-    if (msg.msg_type === "active_symbols") {
-      const markets = (msg.active_symbols || []).filter(isVolatility);
+    if (msg.msg_type === "active_symbols" || Array.isArray(msg.active_symbols) || Array.isArray(msg.data?.active_symbols)) {
+      const allSymbols = msg.active_symbols || msg.data?.active_symbols || [];
+      const markets = allSymbols.filter(isVolatility);
+      this.state.activeSymbolsReceived = true;
+      this.state.rawSymbolCount = allSymbols.length;
+      this.state.matchedSymbolCount = markets.length;
+      this.state.sampleSymbolNames = allSymbols.slice(0, 12).map(item =>
+        String(item?.display_name || item?.name || item?.symbol || "unnamed")
+      );
       this.state.markets = markets.length;
       this.state.status = markets.length ? "streaming" : "no-volatility-markets";
       if (this.socket?.readyState === WebSocket.OPEN) {
