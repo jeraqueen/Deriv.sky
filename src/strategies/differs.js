@@ -197,6 +197,14 @@ export class DiffersStrategy {
     return true;
   }
 
+  snapshot() {
+    return Array.from(this.markets.entries()).map(([market, state]) => [market, { ...state }]);
+  }
+
+  restore(snapshot) {
+    this.markets = new Map(Array.isArray(snapshot) ? snapshot : []);
+  }
+
   resetMarket(market) {
     this.markets.delete(market);
   }
