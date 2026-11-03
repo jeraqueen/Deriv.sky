@@ -111,6 +111,7 @@ let wsRequestId = 100;
 let pendingWsRequests = new Map();
 let autoDemoTradingEnabled = localStorage.getItem("sky_auto_demo_enabled") !== "0";
 let activeExecutionMarkets = new Set();
+let strategyResultReportsInFlight = new Set();
 let autoStatusBusy = false;
 let signalSocket = null;
 let signalReconnectDelay = 1000;
@@ -191,9 +192,10 @@ function updateContractResult(contract) {
   }
 }
 async function reportSettledStrategyResult(record) {
-  if (!record || record.strategyResultReported || record.strategyResultReporting || !record.isSold ||
+  const contractId = String(record?.contractId || "");
+  if (!record || record.strategyResultReported || strategyResultReportsInFlight.has(contractId) || !record.isSold ||
       !Number.isFinite(Number(record.profit)) || !record.market || !Number.isInteger(Number(record.cycle))) return;
-  record.strategyResultReporting = true;
+  strategyResultReportsInFlight.add(contractId);
   try {
     const response = await fetch("/api/scanner?action=result", {
       method:"POST", headers:{"content-type":"application/json"},
@@ -212,7 +214,7 @@ async function reportSettledStrategyResult(record) {
       saveContractRecords();
     }
   } finally {
-    record.strategyResultReporting = false;
+    strategyResultReportsInFlight.delete(contractId);
   }
 }
 function retryUnreportedSettledResults() {
