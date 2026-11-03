@@ -47,18 +47,22 @@
   </section>
   <section class="panel" id="marketPanel">
     <div class="row" style="justify-content:space-between">
-      <h2>Live Volatility Index scanner</h2><span class="pill" id="feedPill">STARTING</span>
+      <h2>24/7 background market scanner</h2><span class="pill" id="feedPill">CHECKING</span>
     </div>
-    <p class="muted">Public Deriv tick stream. The scanner discovers active Volatility Indices and listens to their live ticks.</p>
+    <p class="muted">Runs on Cloudflare in the background. It does not depend on this page staying open.</p>
     <div class="grid">
-      <div class="metric"><span class="muted">Markets discovered</span><b id="marketCount">0</b></div>
-      <div class="metric"><span class="muted">Live ticks received</span><b id="tickCount">0</b></div>
+      <div class="metric"><span class="muted">Volatility markets</span><b id="marketCount">0</b></div>
+      <div class="metric"><span class="muted">Ticks received</span><b id="tickCount">0</b></div>
       <div class="metric"><span class="muted">Latest last digit</span><b id="latestDigit">—</b></div>
     </div>
-    <div class="feedline"><span>Latest market</span><span class="feedvalue" id="latestMarket">Waiting for feed…</span></div>
-    <div class="feedline"><span>Feed status</span><span class="feedvalue" id="feedStatus">Connecting…</span></div>
-    <div class="row" style="margin-top:14px"><button id="feedToggle" class="secondary">Stop scanning</button></div>
-    <p class="small warn">Tick data only: this feed does not yet reproduce Deriv’s red/green digit-bar percentages, so it cannot trigger trades. Scanning runs only while this page remains open.</p>
+    <div class="feedline"><span>Latest market</span><span class="feedvalue" id="latestMarket">Not tested yet</span></div>
+    <div class="feedline"><span>Background service</span><span class="feedvalue" id="feedStatus">Checking…</span></div>
+    <div class="row" style="margin-top:14px">
+      <button id="feedStart">Start background service</button>
+      <button id="feedTest" class="secondary">Test live feed now</button>
+      <button id="feedStop" class="secondary">Stop service</button>
+    </div>
+    <p class="small warn" id="feedNote">Dry-run only. Live tick data is monitored; no trades are submitted. Exact Deriv red/green digit-bar percentages still need validation before DIFFER can be activated.</p>
   </section>
   <section class="panel" id="strategyPanel">
     <div class="row" style="justify-content:space-between">
@@ -161,40 +165,41 @@ $("load").addEventListener("click",()=>loadSelectedAccount().catch(e=>$("account
 $("disconnect").addEventListener("click",()=>{accessToken=null;expiresAt=0;$("accountPanel").hidden=true;$("disconnect").hidden=true;$("status").textContent="Disconnected";});
 (async()=>{try{if(location.pathname==="/callback") await handleCallback();}catch(e){$("status").textContent=e.message;history.replaceState({},"","/");}})();
 </script>
-<script type="module">
-import { connectVolatilityScanner } from "/market/volatility-scanner.js";
-let scanner = null;
-let ticks = 0;
-function setFeedStatus(value) {
-  $("feedStatus").textContent = value;
-  $("feedPill").textContent = value === "streaming" ? "LIVE" : value.toUpperCase().slice(0,18);
-}
-function startScanner() {
-  if (scanner) return;
-  setFeedStatus("connecting");
-  scanner = connectVolatilityScanner({
-    onStatus: setFeedStatus,
-    onSymbols(symbols) {
-      $("marketCount").textContent = String(symbols.length);
-      $("latestMarket").textContent = symbols.length ? "Subscribing to all " + symbols.length + " indices" : "No active indices found";
-    },
-    onTick(tick) {
-      ticks += 1;
-      $("tickCount").textContent = String(ticks);
-      $("latestMarket").textContent = tick.symbol;
-      $("latestDigit").textContent = String(tick.currentDigit);
-    }
+<script>
+async function scannerAction(action) {
+  const response = await fetch("/api/scanner?action=" + action, {
+    method: action === "status" ? "GET" : "POST",
+    headers: { "content-type": "application/json" }
   });
-  $("feedToggle").textContent = "Stop scanning";
+  const data = await response.json();
+  if (!response.ok && action !== "test") throw new Error(data.error || data.note || "Scanner request failed");
+  renderScanner(data);
+  return data;
 }
-function stopScanner() {
-  scanner?.close();
-  scanner = null;
-  setFeedStatus("stopped");
-  $("feedToggle").textContent = "Start scanning";
+function renderScanner(data) {
+  const status = data.status || (data.running ? "running" : "stopped");
+  $("feedStatus").textContent = status + (data.running ? " · background" : "");
+  $("feedPill").textContent = status.toUpperCase().slice(0,18);
+  $("marketCount").textContent = String(data.markets ?? 0);
+  $("tickCount").textContent = String(data.ticks ?? 0);
+  $("latestDigit").textContent = data.latestDigit === null || data.latestDigit === undefined ? "—" : String(data.latestDigit);
+  $("latestMarket").textContent = data.latestMarket || "No tick received yet";
+  if (data.lastError) $("feedNote").textContent = "Feed warning: " + data.lastError + ". No trades are enabled.";
+  if (data.test) $("feedNote").textContent = data.note || "Live feed test completed. No trades were placed.";
 }
-$("feedToggle").addEventListener("click", () => scanner ? stopScanner() : startScanner());
-startScanner();
+$("feedStart").addEventListener("click", async () => {
+  $("feedStatus").textContent = "Starting…";
+  try { await scannerAction("start"); } catch (e) { $("feedStatus").textContent = e.message; }
+});
+$("feedTest").addEventListener("click", async () => {
+  $("feedStatus").textContent = "Testing live Deriv feed for up to 8 seconds…";
+  try { await scannerAction("test"); } catch (e) { $("feedStatus").textContent = e.message; }
+});
+$("feedStop").addEventListener("click", async () => {
+  $("feedStatus").textContent = "Stopping…";
+  try { await scannerAction("stop"); } catch (e) { $("feedStatus").textContent = e.message; }
+});
+scannerAction("status").catch(e => $("feedStatus").textContent = e.message);
 </script>
 </body>
 </html>
