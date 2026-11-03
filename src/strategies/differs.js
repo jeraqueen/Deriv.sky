@@ -48,15 +48,27 @@ export class DiffersStrategy {
       return { action: "WAIT", reason: "Incomplete market data." };
     }
 
+    // The Deriv digit histogram must contain each digit exactly once.
+    // Reject malformed, duplicated, missing, or unknown bar data.
+    const digits = bars.map(b => b?.digit);
+    const validBars = digits.every(validDigit) &&
+      new Set(digits).size === 10 &&
+      bars.every(b => b && ["red", "green", "neutral"].includes(b.color) &&
+        Number.isFinite(b.percentage) && b.percentage >= 0 && b.percentage <= 100);
+    if (!validBars) {
+      return { action: "WAIT", reason: "Digit bars are incomplete, duplicated, or contain invalid percentages." };
+    }
+
     const s = this.stateFor(market);
-    const red = bars.filter(b => b?.color === "red");
-    const green = bars.filter(b => b?.color === "green");
+    const red = bars.filter(b => b.color === "red");
+    const green = bars.filter(b => b.color === "green");
 
     // A cycle ends only after the original one-red/one-green setup disappears.
     const shapeValid = red.length === 1 && green.length === 1 &&
       validDigit(red[0].digit) && validDigit(green[0].digit) &&
       Math.abs(red[0].digit - green[0].digit) >= DIFFER_RULES.minimumDigitSeparation &&
-      Number.isFinite(red[0].percentage);
+      Number.isFinite(red[0].percentage) &&
+      red[0].percentage >= 0 && red[0].percentage <= 100;
 
     if (!shapeValid) {
       if (s.active || s.blocked) {
