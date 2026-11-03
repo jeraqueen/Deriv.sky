@@ -286,6 +286,15 @@ async function executeAutomaticSignal(signal) {
       $("tradeStatus").textContent = "Signal skipped: quoted stake exceeded $1 USD.";
       return;
     }
+    const confirmResponse = await fetch("/api/scanner?action=status", {cache:"no-store"});
+    const confirmStatus = await confirmResponse.json();
+    const stillPending = Array.isArray(confirmStatus.strategyPendingSignals) &&
+      confirmStatus.strategyPendingSignals.some(item => item.signalId === signal.signalId);
+    if (!stillPending || Date.now() - Date.parse(signal.timestamp) > 10000) {
+      rememberSignal(signal.signalId);
+      $("tradeStatus").textContent = "Signal expired or its setup changed before purchase. No contract was sent.";
+      return;
+    }
     // Persist the attempt before sending buy. If the response is lost, never repeat blindly.
     localStorage.setItem("sky_auto_attempted_" + signal.signalId, "1");
     rememberSignal(signal.signalId);
@@ -330,7 +339,12 @@ async function monitorAutomaticTrading() {
         Date.now() - Date.parse(s.timestamp) <= 10000)
       .sort((a,b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))[0];
     if (next) await executeAutomaticSignal(next);
-    else $("tradeStatus").textContent = "AUTO DEMO ON · Scanning 13 markets continuously; waiting for a fresh valid DIFFER trigger…";
+    else {
+      const current = $("tradeStatus").textContent;
+      if (!/DEMO CONTRACT PLACED|Contract settled|Demo contract is open|Purchase response is uncertain/.test(current)) {
+        $("tradeStatus").textContent = "AUTO DEMO ON · Scanning 13 markets continuously; waiting for a fresh valid DIFFER trigger…";
+      }
+    }
   } catch (error) {
     $("tradeStatus").textContent = "Auto execution check: " + error.message;
   } finally {
