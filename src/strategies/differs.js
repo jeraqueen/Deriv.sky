@@ -36,13 +36,15 @@ export class DiffersStrategy {
         greenDigit: null,
         previousRedPercentage: null,
         trades: 0,
-        lastTriggerTick: null
+        lastTriggerTick: null,
+        pending: false,
+        pendingAt: null
       });
     }
     return this.markets.get(market);
   }
 
-  observe({ market, bars, currentDigit, tickId }) {
+  observe({ market, bars, currentDigit, tickId, nowMs = Date.now() }) {
     if (!market || !Array.isArray(bars) || bars.length !== 10 ||
         !validDigit(currentDigit) || tickId === undefined || tickId === null) {
       return { action: "WAIT", reason: "Incomplete market data." };
@@ -60,6 +62,10 @@ export class DiffersStrategy {
     }
 
     const s = this.stateFor(market);
+    if (s.pending && nowMs - s.pendingAt <= 10000) {
+      return { action: "PENDING", market, cycle: s.cycle, reason: "A DIFFER signal is awaiting a demo execution acknowledgement." };
+    }
+    if (s.pending) { s.pending = false; s.pendingAt = null; }
     const red = bars.filter(b => b.color === "red");
     const green = bars.filter(b => b.color === "green");
 
@@ -148,6 +154,8 @@ export class DiffersStrategy {
       return { action: "DUPLICATE_SUPPRESSED", market, cycle: s.cycle, barrier: s.redDigit };
     }
     s.lastTriggerTick = tickId;
+    s.pending = true;
+    s.pendingAt = nowMs;
 
     return {
       action: "BUY_INTENT",
@@ -169,6 +177,16 @@ export class DiffersStrategy {
     if (!s.active || s.blocked || s.cycle !== cycle ||
         s.trades >= DIFFER_RULES.maxTradesPerMarketPerCycle) return false;
     s.trades += 1;
+    s.pending = false;
+    s.pendingAt = null;
+    return true;
+  }
+
+  releasePending(market, cycle) {
+    const s = this.stateFor(market);
+    if (s.cycle !== cycle || !s.pending) return false;
+    s.pending = false;
+    s.pendingAt = null;
     return true;
   }
 
