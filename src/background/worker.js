@@ -1,4 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
+import { DiffersStrategy } from "./differs.js";
+import { buildDigitHistogram, DIGIT_HISTORY_WINDOW } from "./digit-histogram.js";
 
 const DERIV_PUBLIC_WS = "wss://api.derivws.com/trading/v1/options/ws/public";
 const RECONNECT_MS = 5000;
@@ -25,13 +27,20 @@ export class MarketEngine extends DurableObject {
     super(ctx, env);
     this.socket = null;
     this.connecting = false;
+    this.digitHistory = new Map();
+    this.differStrategy = new DiffersStrategy();
+    this.tickSequence = 0;
+    this.marketDiagnostics = new Map();
     this.state = {
       running: false, enabled: true, status: "starting", markets: 0, ticks: 0,
       latestMarket: null, latestDigit: null, lastTickAt: null,
       connectedAt: null, lastError: null, lastMessageType: null,
       activeSymbolsReceived: false, rawSymbolCount: 0, matchedSymbolCount: 0,
       sampleSymbolNames: [], sampleSymbolKeys: [], sampleSymbolPreview: null,
-      lastCloseCode: null, lastCloseReason: null
+      lastCloseCode: null, lastCloseReason: null,
+      strategyMode: "DRY_RUN_NO_ORDERS", strategyWindow: DIGIT_HISTORY_WINDOW,
+      strategyReadyMarkets: 0, strategySignals: 0,
+      strategyLastEvaluation: null, strategyLastSignal: null, strategyMarkets: []
     };
     this.ready = this.ctx.blockConcurrencyWhile(async () => {
       const saved = await this.ctx.storage.get("state");
@@ -174,12 +183,72 @@ export class MarketEngine extends DurableObject {
     if (msg.msg_type === "tick" && (msg.tick?.symbol || msg.tick?.underlying_symbol)) {
       const digit = lastDigit(msg.tick);
       if (digit === null) return;
+      const market = msg.tick.symbol || msg.tick.underlying_symbol;
       this.state.ticks += 1;
-      this.state.latestMarket = msg.tick.symbol || msg.tick.underlying_symbol;
+      this.state.latestMarket = market;
       this.state.latestDigit = digit;
       this.state.lastTickAt = new Date().toISOString();
-      // Keep hot tick updates in memory; persist snapshots on the minute
-      // heartbeat rather than writing to SQLite for every market tick.
+
+      // Keep a rolling 100-tick digit window independently for each market.
+      const history = this.digitHistory.get(market) || [];
+      history.push(digit);
+      if (history.length > DIGIT_HISTORY_WINDOW) history.shift();
+      this.digitHistory.set(market, history);
+
+      if (history.length >= DIGIT_HISTORY_WINDOW) {
+        const histogram = buildDigitHistogram(history);
+        const tickId = ++this.tickSequence;
+        const evaluation = this.differStrategy.observe({
+          market, bars: histogram.bars, currentDigit: digit, tickId
+        });
+        let diagnostic = {
+          market,
+          sampleSize: history.length,
+          counts: histogram.counts,
+          bars: histogram.bars,
+          histogramValid: histogram.valid,
+          histogramReason: histogram.reason,
+          greenDigit: histogram.greenDigit ?? null,
+          greenPercentage: histogram.greenPercentage ?? null,
+          redDigit: histogram.redDigit ?? null,
+          redPercentage: histogram.redPercentage ?? null,
+          digitSeparation: histogram.valid
+            ? Math.abs(histogram.greenDigit - histogram.redDigit) : null,
+          action: evaluation.action,
+          reason: evaluation.reason || histogram.reason,
+          cycle: evaluation.cycle ?? null,
+          simulatedTradesThisCycle: this.differStrategy.stateFor(market).trades
+        };
+
+        if (evaluation.action === "BUY_INTENT") {
+          const simulated = this.differStrategy.recordAcceptedTrade(market, evaluation.cycle);
+          if (simulated) {
+            this.state.strategySignals += 1;
+            diagnostic.action = "DRY_RUN_SIGNAL";
+            diagnostic.reason = "Valid one-tick DIFFER signal detected. Simulated only; no order was sent.";
+            diagnostic.barrier = evaluation.barrier;
+            diagnostic.contractType = evaluation.contractType;
+            diagnostic.duration = evaluation.duration;
+            diagnostic.durationUnit = evaluation.durationUnit;
+            diagnostic.simulatedTradesThisCycle = this.differStrategy.stateFor(market).trades;
+            this.state.strategyLastSignal = {
+              market, barrier: evaluation.barrier, contractType: evaluation.contractType,
+              duration: evaluation.duration, durationUnit: evaluation.durationUnit,
+              cycle: evaluation.cycle, simulatedTradeNumber: diagnostic.simulatedTradesThisCycle,
+              timestamp: new Date().toISOString(), orderPlaced: false
+            };
+          } else {
+            diagnostic.action = "DRY_RUN_REJECTED";
+            diagnostic.reason = "Strategy cycle limit or state check rejected the simulated signal.";
+          }
+        }
+
+        this.marketDiagnostics.set(market, diagnostic);
+        this.state.strategyReadyMarkets = this.marketDiagnostics.size;
+        this.state.strategyMarkets = Array.from(this.marketDiagnostics.values());
+        this.state.strategyLastEvaluation = diagnostic;
+      }
+      // Tick processing stays in memory; no order or purchase request is made.
     }
   }
 
