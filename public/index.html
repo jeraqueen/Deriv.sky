@@ -43,6 +43,19 @@
     </div>
     <div id="accountStatus" class="status"></div>
   </section>
+  <section class="panel" id="strategyPanel">
+    <div class="row" style="justify-content:space-between">
+      <h2>Approved strategy · DIFFER</h2><span class="pill">RULES SAVED</span>
+    </div>
+    <p class="muted">The first strategy evaluates all available Volatility Indices and ranks qualifying setups. It requires exactly one red digit bar and one green digit bar, at least two digit positions apart.</p>
+    <div class="grid">
+      <div class="metric"><span class="muted">Contract</span><b>DIFFER · 1 tick</b></div>
+      <div class="metric"><span class="muted">Barrier</span><b>Red-bar digit</b></div>
+      <div class="metric"><span class="muted">Trade limit</span><b>3 / market / cycle</b></div>
+    </div>
+    <p class="muted" style="margin-top:14px">If the red-bar percentage rises before entry, abandon that setup and scan another market. Never chase a rising barrier percentage. Duplicate triggers are suppressed.</p>
+    <p class="status warn">Strategy evaluator added. Live market scanning and order execution are not connected yet; trading remains disabled.</p>
+  </section>
   <p class="small">Free-tier project. No subscription or paid trading service is included. Trading remains disabled until the strategy and risk controls are tested.</p>
 </main>
 <script>
