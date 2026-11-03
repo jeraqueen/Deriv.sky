@@ -11,7 +11,7 @@ export const DIFFER_RULES = Object.freeze({
   contractType: "DIGITDIFF",
   duration: 1,
   durationUnit: "t",
-  maxTradesPerMarketPerCycle: 3,
+  maxWinsPerMarketPerCycle: 3,
   minimumDigitSeparation: 2,
   requiredRedBars: 1,
   requiredGreenBars: 1,
@@ -36,12 +36,20 @@ export class DiffersStrategy {
         greenDigit: null,
         previousRedPercentage: null,
         trades: 0,
+        wins: 0,
+        losses: 0,
+        openContracts: [],
         lastTriggerTick: null,
         pending: false,
         pendingAt: null
       });
     }
-    return this.markets.get(market);
+    const state = this.markets.get(market);
+    // Migrate persisted cycles created before win-based rotation was introduced.
+    state.wins ??= 0;
+    state.losses ??= 0;
+    state.openContracts ??= [];
+    return state;
   }
 
   observe({ market, bars, currentDigit, tickId, nowMs = Date.now() }) {
@@ -81,6 +89,8 @@ export class DiffersStrategy {
         s.greenDigit = null;
         s.previousRedPercentage = null;
         s.trades = 0;
+        s.wins = 0;
+        s.losses = 0;
         s.lastTriggerTick = null;
         s.pending = false;
         s.pendingAt = null;
@@ -100,6 +110,8 @@ export class DiffersStrategy {
       s.greenDigit = greenDigit;
       s.previousRedPercentage = redPercentage;
       s.trades = 0;
+      s.wins = 0;
+      s.losses = 0;
       s.lastTriggerTick = null;
     } else if (redDigit !== s.redDigit || greenDigit !== s.greenDigit) {
       // A changed bar identity is a new setup; start a fresh cycle.
@@ -109,6 +121,8 @@ export class DiffersStrategy {
       s.greenDigit = greenDigit;
       s.previousRedPercentage = redPercentage;
       s.trades = 0;
+      s.wins = 0;
+      s.losses = 0;
       s.lastTriggerTick = null;
       s.pending = false;
       s.pendingAt = null;
@@ -129,6 +143,12 @@ export class DiffersStrategy {
       s.previousRedPercentage = redPercentage;
     }
 
+    if (s.wins >= DIFFER_RULES.maxWinsPerMarketPerCycle) {
+      s.blocked = true;
+      return { action: "LIMIT_REACHED", market, cycle: s.cycle, wins: s.wins,
+        reason: "Three winning contracts have been completed in this market setup; rotate to another qualifying market." };
+    }
+
     if (s.blocked) {
       return {
         action: "SWITCH_MARKET",
@@ -142,14 +162,10 @@ export class DiffersStrategy {
       return { action: "PENDING", market, cycle: s.cycle, reason: "A DIFFER signal is awaiting a demo execution acknowledgement." };
     }
 
-    if (s.trades >= DIFFER_RULES.maxTradesPerMarketPerCycle) {
-      return {
-        action: "LIMIT_REACHED",
-        market,
-        cycle: s.cycle,
-        trades: s.trades,
-        reason: "Three accepted trades have already been placed in this market during this cycle."
-      };
+    if (s.openContracts.some(item => item.cycle === s.cycle)) {
+      return { action: "WAIT_SETTLEMENT", market, cycle: s.cycle,
+        wins: s.wins, trades: s.trades,
+        reason: "A contract in this market setup is still open; wait for its result before the next entry." };
     }
 
     // The live last digit is the moving cursor. Trigger once when it touches
@@ -173,20 +189,42 @@ export class DiffersStrategy {
       duration: DIFFER_RULES.duration,
       durationUnit: DIFFER_RULES.durationUnit,
       tradesAlreadyAccepted: s.trades,
-      tradesRemaining: DIFFER_RULES.maxTradesPerMarketPerCycle - s.trades,
+      wins: s.wins,
+      winsRemaining: DIFFER_RULES.maxWinsPerMarketPerCycle - s.wins,
+      tradesCompleted: s.trades,
       reason: "All DIFFER conditions are valid and the live digit cursor touched the red-bar digit."
     };
   }
 
   // Call only after Deriv confirms a successful purchase.
-  recordAcceptedTrade(market, cycle) {
+  recordAcceptedTrade(market, cycle, contractId) {
     const s = this.stateFor(market);
-    if (!s.active || s.blocked || !s.pending || s.cycle !== cycle ||
-        s.trades >= DIFFER_RULES.maxTradesPerMarketPerCycle) return false;
+    const id = String(contractId || "");
+    if (!s.active || s.blocked || !s.pending || s.cycle !== cycle || !id ||
+        s.wins >= DIFFER_RULES.maxWinsPerMarketPerCycle ||
+        s.openContracts.some(item => item.contractId === id)) return false;
     s.trades += 1;
+    s.openContracts.push({ contractId: id, cycle });
     s.pending = false;
     s.pendingAt = null;
     return true;
+  }
+
+  // Count each settled contract once. Losses do not count toward the three-win rotation.
+  recordContractResult(market, cycle, contractId, won) {
+    const s = this.stateFor(market);
+    const id = String(contractId || "");
+    const index = s.openContracts.findIndex(item => item.contractId === id);
+    if (!id || index < 0) return { ok: false, duplicateOrUnknown: true };
+    const [open] = s.openContracts.splice(index, 1);
+    if (open.cycle !== cycle || s.cycle !== cycle) {
+      return { ok: true, staleCycle: true, wins: s.wins, losses: s.losses };
+    }
+    if (won) s.wins += 1;
+    else s.losses += 1;
+    if (s.wins >= DIFFER_RULES.maxWinsPerMarketPerCycle) s.blocked = true;
+    return { ok: true, wins: s.wins, losses: s.losses,
+      completed: s.wins >= DIFFER_RULES.maxWinsPerMarketPerCycle };
   }
 
   releasePending(market, cycle) {

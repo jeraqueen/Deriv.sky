@@ -94,7 +94,7 @@
       <div class="metric"><span class="muted">Barrier</span><b>Red-bar digit</b></div>
       <div class="metric"><span class="muted">Trade limit</span><b>3 / market / cycle</b></div>
     </div>
-    <p class="muted" style="margin-top:14px">If the red-bar percentage rises before entry, abandon that setup and scan another market. Never chase a rising barrier percentage. Duplicate triggers are suppressed.</p>
+    <p class="muted" style="margin-top:14px">Each market can continue trading while its setup remains valid, until it records 3 settled wins in that setup cycle. Losses do not count toward the 3 wins. Only one unsettled contract is allowed per market at a time. If the red-bar percentage rises, abandon that setup and scan another market. Never chase a rising barrier percentage.</p>
     <p class="status warn">The scanner runs in Cloudflare. Confirmed $1 USD demo contracts are submitted by the connected browser only; keep this page open to trade.</p>
   </section>
   <p class="small">Cloudflare Free usage limits apply. If daily quotas are reached, the background service may stop until the quota resets. Automatic execution is DEMO-only. Real accounts are never selectable.</p>
@@ -110,7 +110,7 @@ let tradeSocket = null;
 let wsRequestId = 100;
 let pendingWsRequests = new Map();
 let autoDemoTradingEnabled = localStorage.getItem("sky_auto_demo_enabled") !== "0";
-let autoTradeBusy = false;
+let activeExecutionMarkets = new Set();
 let autoStatusBusy = false;
 let signalSocket = null;
 let signalReconnectDelay = 1000;
@@ -186,6 +186,28 @@ function updateContractResult(contract) {
   if (contract.profit !== undefined && contract.profit !== null) record.profit = Number(contract.profit);
   if (contract.sell_price !== undefined) record.sellPrice = Number(contract.sell_price);
   saveContractRecords();
+  if (record.isSold && !record.strategyResultReported && record.market && Number.isInteger(Number(record.cycle))) {
+    reportSettledStrategyResult(record).catch(() => {});
+  }
+}
+async function reportSettledStrategyResult(record) {
+  if (!record || record.strategyResultReported || !record.isSold || !Number.isFinite(Number(record.profit)) || !record.market || !Number.isInteger(Number(record.cycle))) return;
+  const response = await fetch("/api/scanner?action=result", {
+    method:"POST", headers:{"content-type":"application/json"},
+    body:JSON.stringify({contractId:String(record.contractId),market:record.market,cycle:Number(record.cycle),won:Number(record.profit) > 0})
+  });
+  const data = await response.json();
+  if (response.ok && data.ok) {
+    record.strategyResultReported = true;
+    record.marketWins = data.wins;
+    record.marketLosses = data.losses;
+    record.marketCycleCompleted = data.completed === true;
+    saveContractRecords();
+    if (data.completed) $("tradeStatus").textContent = record.market + " completed three wins in this setup. The bot is rotating to other qualifying markets.";
+  } else if (response.status === 404) {
+    record.strategyResultReported = true;
+    saveContractRecords();
+  }
 }
 function persistSession() {
   if (accessToken && expiresAt > Date.now()) {
@@ -369,29 +391,35 @@ function enqueueAutomaticSignal(signal) {
   drainAutomaticQueue();
 }
 async function drainAutomaticQueue() {
-  if (autoTradeBusy) return;
-  autoTradeBusy = true;
-  try {
-    while (executionQueue.length && autoDemoTradingEnabled) {
-      const signal = executionQueue.shift();
-      queuedSignalIds.delete(signal.signalId);
-      if (invalidatedSignalIds.has(signal.signalId)) { rememberSignal(signal.signalId); continue; }
-      await executeAutomaticSignal(signal);
+  if (!autoDemoTradingEnabled || !selectedDemoAccount || selectedDemoAccount.accountType !== "demo") return;
+  const jobs = [];
+  for (let i = 0; i < executionQueue.length;) {
+    const signal = executionQueue[i];
+    if (activeExecutionMarkets.has(signal.market)) { i++; continue; }
+    executionQueue.splice(i, 1);
+    queuedSignalIds.delete(signal.signalId);
+    if (invalidatedSignalIds.has(signal.signalId)) {
+      rememberSignal(signal.signalId);
+      continue;
     }
-  } finally {
-    autoTradeBusy = false;
-    if (executionQueue.length && autoDemoTradingEnabled) drainAutomaticQueue();
+    activeExecutionMarkets.add(signal.market);
+    jobs.push((async () => {
+      try { await executeAutomaticSignal(signal); }
+      finally { activeExecutionMarkets.delete(signal.market); }
+    })());
   }
+  if (jobs.length) await Promise.all(jobs);
+  if (executionQueue.length && autoDemoTradingEnabled) drainAutomaticQueue();
 }
 function rememberSignal(signalId) {
   processedSignalIds.add(signalId);
   while (processedSignalIds.size > 250) processedSignalIds.delete(processedSignalIds.values().next().value);
   localStorage.setItem("sky_auto_processed_signals", JSON.stringify(Array.from(processedSignalIds)));
 }
-async function acknowledgeSignal(signal, accepted, detail) {
+async function acknowledgeSignal(signal, accepted, detail, contractId) {
   const response = await fetch("/api/scanner?action=ack", {
     method:"POST", headers:{"content-type":"application/json"},
-    body:JSON.stringify({signalId:signal.signalId,market:signal.market,cycle:signal.cycle,accepted,detail})
+    body:JSON.stringify({signalId:signal.signalId,market:signal.market,cycle:signal.cycle,accepted,detail,contractId:contractId ? String(contractId) : undefined})
   });
   const data = await response.json();
   if (!response.ok || !data.ok) throw new Error(data.error || "Could not acknowledge the signal.");
@@ -458,14 +486,14 @@ async function executeAutomaticSignal(signal) {
     addConfirmedContract({
       contractId:String(bought.contract_id), market:signal.market, barrier:signal.barrier,
       timestamp:bought.purchase_time ? new Date(Number(bought.purchase_time) * 1000).toISOString() : new Date().toISOString(),
-      stake:1, currency:"USD",
+      stake:1, currency:"USD", cycle:Number(signal.cycle),
       signalDetectedAt:signal.timestamp,
       signalReceivedAt:new Date(receivedAt).toISOString(),
       proposalMs:proposalReceivedAt - proposalRequestedAt,
       buyMs:buyConfirmedAt - buySentAt,
       totalExecutionMs:buyConfirmedAt - receivedAt
     });
-    await acknowledgeSignal(signal, true, "Deriv confirmed contract " + bought.contract_id);
+    await acknowledgeSignal(signal, true, "Deriv confirmed contract " + bought.contract_id, bought.contract_id);
     $("tradeStatus").textContent = "DEMO CONTRACT PLACED · " + signal.market + " · DIFFER " + signal.barrier + " · 1 tick · Contract ID " + bought.contract_id;
     await wsRequest({proposal_open_contract:1, contract_id:bought.contract_id, subscribe:1});
   } catch (error) {
