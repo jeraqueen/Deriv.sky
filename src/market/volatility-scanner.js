@@ -6,18 +6,14 @@
  */
 export const PUBLIC_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
 
+export const APPROVED_VOLATILITY_SYMBOLS = new Set(["1HZ10V","1HZ15V","1HZ25V","1HZ30V","1HZ50V","1HZ75V","1HZ90V","1HZ100V","R_10","R_25","R_50","R_75","R_100"]);
+
 export function marketSymbol(item) {
   return String(item?.underlying_symbol || item?.symbol || "");
 }
 
 export function isVolatilityIndex(item) {
-  // Support both current Deriv API fields and legacy field names.
-  const symbol = marketSymbol(item);
-  const identity = [item?.underlying_symbol_name, item?.display_name, item?.name, symbol]
-    .filter(Boolean).join(" ");
-  return /volatility/i.test(identity) ||
-    /^(?:1HZ)?(?:10|15|25|30|50|75|90|100)V$/i.test(symbol) ||
-    /^R_(?:10|25|50|75|100)$/i.test(symbol);
+  return APPROVED_VOLATILITY_SYMBOLS.has(marketSymbol(item));
 }
 
 export function lastDigitFromTick(tick) {
