@@ -222,6 +222,7 @@ export class MarketEngine extends DurableObject {
       const expiredSignals = pendingSignals.filter(item => now - Date.parse(item.timestamp) > 10000);
       for (const item of expiredSignals) this.differStrategy.releasePending(item.market, item.cycle);
       this.state.strategyPendingSignals = pendingSignals.filter(item => now - Date.parse(item.timestamp) <= 10000);
+      let pendingQueueChanged = expiredSignals.length > 0;
       const digit = lastDigit(msg.tick);
       if (digit === null) return;
       const market = msg.tick.symbol || msg.tick.underlying_symbol;
@@ -245,6 +246,11 @@ export class MarketEngine extends DurableObject {
         const evaluation = this.differStrategy.observe({
           market, bars: histogram.bars, currentDigit: digit, tickId
         });
+        if (evaluation.action !== "PENDING") {
+          const before = this.state.strategyPendingSignals.length;
+          this.state.strategyPendingSignals = this.state.strategyPendingSignals.filter(item => item.market !== market);
+          if (this.state.strategyPendingSignals.length !== before) pendingQueueChanged = true;
+        }
         let diagnostic = {
           market,
           sampleSize: history.length,
@@ -271,6 +277,7 @@ export class MarketEngine extends DurableObject {
           this.state.strategySignals += 1;
           this.state.strategyPendingSignals.push(signal);
           this.state.strategyPendingSignals = this.state.strategyPendingSignals.slice(-13);
+          pendingQueueChanged = true;
           diagnostic.action = "PENDING_DEMO_SIGNAL";
           diagnostic.reason = "Valid DIFFER trigger queued for authenticated demo execution.";
           diagnostic.barrier = evaluation.barrier;
@@ -286,8 +293,9 @@ export class MarketEngine extends DurableObject {
         this.state.strategyReadyMarkets = this.marketDiagnostics.size;
         this.state.strategyMarkets = Array.from(this.marketDiagnostics.values());
         this.state.strategyLastEvaluation = diagnostic;
+        if (pendingQueueChanged) await this.save();
       }
-      // Tick processing stays in memory; no order or purchase request is made.
+      // Tick processing stays in memory; authenticated demo execution is handled by the connected browser.
     }
   }
 
