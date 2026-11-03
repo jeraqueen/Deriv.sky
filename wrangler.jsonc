@@ -2,5 +2,14 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "the-sky-bot",
   "compatibility_date": "2026-11-03",
-  "pages_build_output_dir": "./public"
+  "pages_build_output_dir": "./public",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "MARKET_ENGINE",
+        "class_name": "MarketEngine",
+        "script_name": "sky-bot-engine"
+      }
+    ]
+  }
 }
