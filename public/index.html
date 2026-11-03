@@ -94,7 +94,7 @@
       <div class="metric"><span class="muted">Barrier</span><b>Red-bar digit</b></div>
       <div class="metric"><span class="muted">Trade limit</span><b>3 / market / cycle</b></div>
     </div>
-    <p class="muted" style="margin-top:14px">If the red-bar percentage rises before entry, abandon that setup and scan another market. Never chase a rising barrier percentage. Duplicate triggers are suppressed.</p>
+    <p class="muted" style="margin-top:14px">Each market can continue trading while its setup remains valid, until it records 3 settled wins in that setup cycle. Losses do not count toward the 3 wins. Only one unsettled contract is allowed per market at a time. If the red-bar percentage rises, abandon that setup and scan another market. Never chase a rising barrier percentage.</p>
     <p class="status warn">The scanner runs in Cloudflare. Confirmed $1 USD demo contracts are submitted by the connected browser only; keep this page open to trade.</p>
   </section>
   <p class="small">Cloudflare Free usage limits apply. If daily quotas are reached, the background service may stop until the quota resets. Automatic execution is DEMO-only. Real accounts are never selectable.</p>
@@ -191,7 +191,7 @@ function updateContractResult(contract) {
   }
 }
 async function reportSettledStrategyResult(record) {
-  if (!record || record.strategyResultReported || !record.isSold || !record.market || !Number.isInteger(Number(record.cycle))) return;
+  if (!record || record.strategyResultReported || !record.isSold || !Number.isFinite(Number(record.profit)) || !record.market || !Number.isInteger(Number(record.cycle))) return;
   const response = await fetch("/api/scanner?action=result", {
     method:"POST", headers:{"content-type":"application/json"},
     body:JSON.stringify({contractId:String(record.contractId),market:record.market,cycle:Number(record.cycle),won:Number(record.profit) > 0})
