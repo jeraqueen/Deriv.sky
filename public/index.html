@@ -622,7 +622,40 @@ $("disconnect").addEventListener("click",()=>{
 })();
 </script>
 <script>
-async function scannerAction(action) {
+async function scanQualifyingMarkets() {
+  $("marketScanStatus").textContent = "Scanning latest 100 ticks from standard Volatility markets…";
+  $("scanMarkets").disabled = true;
+  try {
+    const response = await fetch("/api/scanner?action=markets", {cache:"no-store"});
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "Market scan failed.");
+    const list = $("marketScanResults");
+    list.replaceChildren();
+    if (!data.qualifying.length) {
+      const empty=document.createElement("div"); empty.className="empty-state";
+      empty.textContent = data.marketsScanned
+        ? "No markets currently match all conditions. Keep the feed running and scan again."
+        : "No complete 100-tick samples yet. Start the background feed, wait for data, then scan again.";
+      list.appendChild(empty);
+    } else {
+      for (const item of data.qualifying) {
+        const card=document.createElement("div"); card.className="contract-item";
+        const head=document.createElement("div"); head.className="contract-head";
+        const name=document.createElement("span"); name.textContent=item.market+" · QUALIFIES";
+        const sample=document.createElement("span"); sample.textContent=item.sampleSize+" ticks"; head.append(name,sample);
+        const meta=document.createElement("div"); meta.className="contract-meta";
+        meta.textContent="0: "+item.zeroPercentage.toFixed(1)+"% · 9: "+item.ninePercentage.toFixed(1)+"% · 4: "+item.digitFourPercentage.toFixed(1)+"% (unmarked) · 5: "+item.digitFivePercentage.toFixed(1)+"% (unmarked)";
+        const ranks=document.createElement("div"); ranks.className="contract-meta";
+        ranks.textContent="GREEN "+item.green.digit+" ("+item.green.percentage.toFixed(1)+"%) · BLUE "+item.blue.digit+" ("+item.blue.percentage.toFixed(1)+"%) · ORANGE "+item.orange.digit+" ("+item.orange.percentage.toFixed(1)+"%) · RED "+item.red.digit+" ("+item.red.percentage.toFixed(1)+"%)";
+        card.append(head,meta,ranks); list.appendChild(card);
+      }
+    }
+    $("marketScanStatus").textContent=data.qualifying.length+" qualifying market(s) from "+data.marketsScanned+" standard Volatility markets. Window: "+data.window+" ticks.";
+  } catch(error) { $("marketScanStatus").textContent=error.message; }
+  finally { $("scanMarkets").disabled=false; }
+}
+$("scanMarkets").addEventListener("click",scanQualifyingMarkets);
+\nasync function scannerAction(action) {
   const response = await fetch("/api/scanner?action=" + action, {
     method: action === "status" ? "GET" : "POST",
     headers: { "content-type": "application/json" }
