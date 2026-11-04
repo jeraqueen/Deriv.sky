@@ -313,6 +313,7 @@ export class MarketEngine extends DurableObject {
         String(item?.underlying_symbol_name || item?.display_name || item?.name || symbolCode(item) || "unnamed")
       );
       this.state.markets = markets.length;
+      this.state.marketScanResults = APPROVED_MARKET_ORDER.map(name => ({market:name,sampleSize:(this.digitHistory.get(name)||[]).length,required:DIGIT_HISTORY_WINDOW,remaining:Math.max(0,DIGIT_HISTORY_WINDOW-(this.digitHistory.get(name)||[]).length),status:(this.digitHistory.get(name)||[]).length>=DIGIT_HISTORY_WINDOW?"READY":"COLLECTING"}));
       this.state.status = markets.length ? "subscribing" : "no-volatility-markets";
       this.state.tickSubscriptionCount = 0;
       if (this.socket?.readyState === WebSocket.OPEN && markets.length) {
