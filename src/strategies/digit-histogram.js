@@ -19,8 +19,8 @@ export function buildDigitHistogram(digits) {
   const ranked = counts.map((count, digit) => ({ digit, count }))
     .sort((a,b) => b.count - a.count || a.digit - b.digit);
   const greenDigit = ranked[0].digit;
-  const blueDigit = ranked[1].digit;
-  const orangeDigit = ranked[8].digit;
+  const orangeDigit = ranked[1].digit;
+  const blueDigit = ranked[8].digit;
   const redDigit = ranked[9].digit;
   const max = counts[greenDigit];
   const min = counts[redDigit];
