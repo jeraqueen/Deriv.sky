@@ -567,7 +567,7 @@ async function monitorAutomaticTrading() {
     else {
       const current = $("tradeStatus").textContent;
       if (!/DEMO CONTRACT PLACED|Contract settled|Demo contract is open|Purchase response is uncertain/.test(current)) {
-        $("tradeStatus").textContent = "BOARD RUNNING · Market rotation active; waiting for a valid MATCHES or DIFFERS entry…";
+        $("tradeStatus").textContent = "BOARD RUNNING · Scanning all 13 markets simultaneously for valid MATCHES or DIFFERS entries…";
       }
     }
   } catch (error) {
@@ -590,7 +590,7 @@ $("autoToggle").addEventListener("click", () => {
     }
     scannerAction("start").then(() => {
       localStorage.setItem("sky_auto_demo_enabled","1");
-      $("tradeStatus").textContent = "Board started. MATCHES and DIFFERS are active with $1 demo stakes and two-consecutive-win market rotation.";
+      $("tradeStatus").textContent = "Board started. MATCHES and DIFFERS are scanning all 13 markets independently with $1 USD demo stakes.";
       connectSignalStream(); monitorAutomaticTrading(); drainAutomaticQueue();
     }).catch(error => { autoDemoTradingEnabled = false; updateAutoToggle(); $("tradeStatus").textContent = "Could not start board: " + error.message; });
   } else {
