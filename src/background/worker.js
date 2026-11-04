@@ -16,7 +16,7 @@ function lastDigit(tick) {
   const digits = quote.toFixed(tick.pip_size).replace(/\D/g, "");
   return digits.length ? Number(digits.at(-1)) : null;
 }
-const APPROVED_MARKET_ORDER = ["1HZ10V","1HZ15V","1HZ25V","1HZ30V","1HZ50V","1HZ75V","1HZ90V","1HZ100V","R_10","R_25","R_50","R_75","R_100"];
+const APPROVED_MARKET_ORDER = ["R_10","R_25","R_50","R_75","R_100"];
 const APPROVED_VOLATILITY_SYMBOLS = new Set(APPROVED_MARKET_ORDER);
 const STANDARD_MARKETS = ["R_10","R_25","R_50","R_75","R_100"];
 function symbolCode(item) {
