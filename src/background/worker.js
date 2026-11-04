@@ -378,6 +378,7 @@ export class MarketEngine extends DurableObject {
           });
           this.state.marketScanMatches = matches.sort((a,b) => a.market.localeCompare(b.market));
           this.state.marketScanUpdatedAt = new Date().toISOString();
+          pendingQueueChanged = true;
         }
       }
 
