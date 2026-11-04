@@ -472,6 +472,7 @@ export class MarketEngine extends DurableObject {
           diagnostic.duration = chosen.duration;
           diagnostic.durationUnit = chosen.durationUnit;
           diagnostic.signalId = signalId;
+          diagnostic.timestamp = timestamp;
           diagnostic.simulatedTradesThisCycle = this.differStrategy.stateFor(market).trades;
           this.state.strategyLastSignal = signal;
           realtimeEvents.push({ type: "signal", signal });
