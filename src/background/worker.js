@@ -18,6 +18,7 @@ function lastDigit(tick) {
 }
 const APPROVED_MARKET_ORDER = ["1HZ10V","1HZ15V","1HZ25V","1HZ30V","1HZ50V","1HZ75V","1HZ90V","1HZ100V","R_10","R_25","R_50","R_75","R_100"];
 const APPROVED_VOLATILITY_SYMBOLS = new Set(APPROVED_MARKET_ORDER);
+const STANDARD_MARKETS = ["R_10","R_25","R_50","R_75","R_100"];
 function symbolCode(item) {
   return String(item?.underlying_symbol || item?.symbol || "");
 }
@@ -47,7 +48,7 @@ export class MarketEngine extends DurableObject {
       strategyReadyMarkets: 0, strategySignals: 0,
       strategyLastEvaluation: null, strategyLastSignal: null, strategyMarkets: [],
       strategyPendingSignals: [], marketScanMatches: [], marketScanUpdatedAt: null, strategyLastExecution: null,
-      rotationIndex: 0, rotationRound: 1, rotationByMarket: {}
+      rotationIndex: 0, rotationRound: 1, rotationByMarket: {}, marketScanResults: []
     };
     this.ready = this.ctx.blockConcurrencyWhile(async () => {
       const saved = await this.ctx.storage.get("state");
@@ -148,45 +149,41 @@ export class MarketEngine extends DurableObject {
       }
       if (body.won) rotation.consecutiveWins += 1;
       else rotation.consecutiveWins = 0;
-      const completed = rotation.consecutiveWins >= 2;
-      if (completed) {
-        this.state.rotationIndex = (Number(this.state.rotationIndex || 0) + 1) % APPROVED_MARKET_ORDER.length;
-        if (this.state.rotationIndex === 0) this.state.rotationRound = Number(this.state.rotationRound || 1) + 1;
-        rotation.consecutiveWins = 0;
-      }
+      const completed = false; // Independent markets; no sequential rotation gate.
       this.state.strategyLastExecution = { ...(this.state.strategyLastExecution || {}), market, cycle,
         contractId, strategy:open.strategy, result: body.won ? "WIN" : "LOSS",
         consecutiveWins: completed ? 2 : rotation.consecutiveWins, completed,
-        nextMarket: this.activeRotationMarket(), timestamp: new Date().toISOString() };
+        nextMarket: null, timestamp: new Date().toISOString() };
       await this.save();
       return Response.json({ ok:true, wins:rotation.consecutiveWins, consecutiveWins:rotation.consecutiveWins,
         losses:rotation.losses || 0, completed, nextMarket:this.activeRotationMarket() });
     }
     if (url.pathname === "/markets") {
-      const results = [];
-      for (const [market, history] of this.digitHistory.entries()) {
-        if (!/^R_(10|25|50|75|100)$/.test(market) || history.length < DIGIT_HISTORY_WINDOW) continue;
+      const results = STANDARD_MARKETS.map(market => {
+        const history = this.digitHistory.get(market) || [];
+        const sampleSize = history.length;
+        if (sampleSize < DIGIT_HISTORY_WINDOW) return {
+          market, sampleSize, required:DIGIT_HISTORY_WINDOW, qualifies:false,
+          status:"COLLECTING", remaining:DIGIT_HISTORY_WINDOW-sampleSize
+        };
         const histogram = buildDigitHistogram(history);
-        if (!histogram.ready || !histogram.counts) continue;
-        const ranked = histogram.counts.map((count, digit) => ({ digit, count, percentage: count / DIGIT_HISTORY_WINDOW * 100 }))
-          .sort((a,b) => b.count - a.count || a.digit - b.digit);
-        const top = new Set([ranked[0].digit, ranked[1].digit]);
-        const bottom = new Set([ranked[8].digit, ranked[9].digit]);
-        const zero = ranked.find(item => item.digit === 0);
-        const nine = ranked.find(item => item.digit === 9);
-        const digitFour = ranked.find(item => item.digit === 4);
-        const digitFive = ranked.find(item => item.digit === 5);
-        const qualifies = zero.percentage < 10 && nine.percentage < 10 &&
+        const ranked = histogram.counts.map((count, digit) => ({digit,count,percentage:count/DIGIT_HISTORY_WINDOW*100}))
+          .sort((a,b)=>b.count-a.count || a.digit-b.digit);
+        const top = new Set([ranked[0].digit,ranked[1].digit]);
+        const bottom = new Set([ranked[8].digit,ranked[9].digit]);
+        const zero = ranked.find(item=>item.digit===0), nine = ranked.find(item=>item.digit===9);
+        const digitFour = ranked.find(item=>item.digit===4), digitFive = ranked.find(item=>item.digit===5);
+        const qualifies = zero.percentage<10 && nine.percentage<10 &&
           !top.has(4) && !bottom.has(4) && !top.has(5) && !bottom.has(5);
-        results.push({ market, sampleSize:history.length, zeroPercentage:zero.percentage,
-          ninePercentage:nine.percentage, digitFourPercentage:digitFour.percentage,
-          digitFivePercentage:digitFive.percentage, green:ranked[0], blue:ranked[1],
-          orange:ranked[8], red:ranked[9], qualifies });
-      }
-      results.sort((a,b) => Number(b.qualifies)-Number(a.qualifies) ||
-        (a.zeroPercentage+a.ninePercentage)-(b.zeroPercentage+b.ninePercentage));
-      return Response.json({ok:true, window:DIGIT_HISTORY_WINDOW, marketsScanned:results.length,
-        qualifying:results.filter(item=>item.qualifies), results, note:"Standard Volatility indices only; 1-second indices excluded."});
+        return {market,sampleSize,required:DIGIT_HISTORY_WINDOW,zeroPercentage:zero.percentage,
+          ninePercentage:nine.percentage,digitFourPercentage:digitFour.percentage,digitFivePercentage:digitFive.percentage,
+          green:ranked[0],blue:ranked[1],orange:ranked[8],red:ranked[9],qualifies,
+          status:qualifies?"QUALIFIES":"NO ENTRY"};
+      });
+      return Response.json({ok:true,window:DIGIT_HISTORY_WINDOW,
+        marketsScanned:results.filter(item=>item.sampleSize>=DIGIT_HISTORY_WINDOW).length,
+        qualifying:results.filter(item=>item.qualifies),results,
+        note:"All five standard Volatility indices shown; 1-second indices excluded."});
     }
     if (url.pathname === "/status") {
       return Response.json({ ok: true, ...this.state, uptimeMode: "Cloudflare Durable Object background feed" });
@@ -321,14 +318,36 @@ export class MarketEngine extends DurableObject {
       if (this.socket?.readyState === WebSocket.OPEN && markets.length) {
         const symbols = markets.map(symbolCode).filter(Boolean);
         this.state.tickSubscriptionRequestedAt = new Date().toISOString();
-        this.state.tickSubscriptionRequestId = 2;
-        this.socket.send(JSON.stringify({
-          ticks: symbols,
-          subscribe: 1,
-          req_id: this.state.tickSubscriptionRequestId
-        }));
+        this.state.tickSubscriptionCount = 0;
+        // Deriv ticks_history accepts one symbol per request, not an array.
+        // Seed each rolling window with 100 past ticks and keep its live subscription.
+        symbols.forEach((symbol,index) => this.socket.send(JSON.stringify({
+          ticks_history:symbol,count:DIGIT_HISTORY_WINDOW,end:"latest",style:"ticks",
+          subscribe:1,req_id:100+index
+        })));
       }
       await this.save();
+      return;
+    }
+    if (msg.msg_type === "history" && msg.history && msg.echo_req?.ticks_history) {
+      const market = String(msg.echo_req.ticks_history);
+      if (APPROVED_VOLATILITY_SYMBOLS.has(market) && Array.isArray(msg.history.prices)) {
+        const prices = msg.history.prices;
+        const digits = prices.map(price => {
+          const value = Number(price);
+          if (!Number.isFinite(value)) return null;
+          const precision = Math.max(0,(String(price).split(".")[1] || "").length);
+          const text = value.toFixed(precision).replace(/\\D/g,"");
+          return text.length ? Number(text.at(-1)) : null;
+        }).filter(digit=>Number.isInteger(digit) && digit>=0 && digit<=9);
+        this.digitHistory.set(market,digits.slice(-DIGIT_HISTORY_WINDOW));
+        this.state.marketScanResults = STANDARD_MARKETS.map(name=>{
+          const n=(this.digitHistory.get(name)||[]).length;
+          return {market:name,sampleSize:n,required:DIGIT_HISTORY_WINDOW,
+            remaining:Math.max(0,DIGIT_HISTORY_WINDOW-n),status:n>=DIGIT_HISTORY_WINDOW?"READY":"COLLECTING"};
+        });
+        await this.save();
+      }
       return;
     }
     if (msg.msg_type === "tick" && (msg.tick?.symbol || msg.tick?.underlying_symbol)) {
@@ -382,10 +401,13 @@ export class MarketEngine extends DurableObject {
         }
       }
 
-      // Build history for every market, but only evaluate/enter on the current
-      // rotation market. Two consecutive wins move the board to the next market.
-      if (market !== this.activeRotationMarket()) { if (pendingQueueChanged) await this.save(); return; }
+      // Evaluate every approved market independently and simultaneously.
       const rotation = this.rotationStateFor(market);
+      this.state.marketScanResults = STANDARD_MARKETS.map(name=>{
+        const n=(this.digitHistory.get(name)||[]).length;
+        return {market:name,sampleSize:n,required:DIGIT_HISTORY_WINDOW,
+          remaining:Math.max(0,DIGIT_HISTORY_WINDOW-n),status:n>=DIGIT_HISTORY_WINDOW?"READY":"COLLECTING"};
+      });
       if (rotation.pending || rotation.openContracts.length) { if (pendingQueueChanged) await this.save(); return; }
 
       if (history.length >= DIGIT_HISTORY_WINDOW) {
