@@ -667,7 +667,8 @@ async function scanQualifyingMarkets() {
   finally { $("scanQualifyingMarkets").disabled=false; }
 }
 $("scanQualifyingMarkets").addEventListener("click",scanQualifyingMarkets);
-\nasync function scannerAction(action) {
+
+async function scannerAction(action) {
   const response = await fetch("/api/scanner?action=" + action, {
     method: action === "status" ? "GET" : "POST",
     headers: { "content-type": "application/json" }
