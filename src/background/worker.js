@@ -162,6 +162,32 @@ export class MarketEngine extends DurableObject {
       return Response.json({ ok:true, wins:rotation.consecutiveWins, consecutiveWins:rotation.consecutiveWins,
         losses:rotation.losses || 0, completed, nextMarket:this.activeRotationMarket() });
     }
+    if (url.pathname === "/market-scan") {
+      const results = [];
+      for (const [market, history] of this.digitHistory.entries()) {
+        if (!/^R_(10|25|50|75|100)$/.test(market) || history.length < DIGIT_HISTORY_WINDOW) continue;
+        const histogram = buildDigitHistogram(history);
+        if (!histogram.ready || !histogram.counts) continue;
+        const ranked = histogram.counts.map((count, digit) => ({ digit, count, percentage: count / DIGIT_HISTORY_WINDOW * 100 }))
+          .sort((a,b) => b.count - a.count || a.digit - b.digit);
+        const top = new Set([ranked[0].digit, ranked[1].digit]);
+        const bottom = new Set([ranked[8].digit, ranked[9].digit]);
+        const zero = ranked.find(item => item.digit === 0);
+        const nine = ranked.find(item => item.digit === 9);
+        const digitFour = ranked.find(item => item.digit === 4);
+        const digitFive = ranked.find(item => item.digit === 5);
+        const qualifies = zero.percentage < 10 && nine.percentage < 10 &&
+          !top.has(4) && !bottom.has(4) && !top.has(5) && !bottom.has(5);
+        results.push({ market, sampleSize:history.length, zeroPercentage:zero.percentage,
+          ninePercentage:nine.percentage, digitFourPercentage:digitFour.percentage,
+          digitFivePercentage:digitFive.percentage, green:ranked[0], blue:ranked[1],
+          orange:ranked[8], red:ranked[9], qualifies });
+      }
+      results.sort((a,b) => Number(b.qualifies)-Number(a.qualifies) ||
+        (a.zeroPercentage+a.ninePercentage)-(b.zeroPercentage+b.ninePercentage));
+      return Response.json({ok:true, window:DIGIT_HISTORY_WINDOW, marketsScanned:results.length,
+        qualifying:results.filter(item=>item.qualifies), results, note:"Standard Volatility indices only; 1-second indices excluded."});
+    }
     if (url.pathname === "/status") {
       return Response.json({ ok: true, ...this.state, uptimeMode: "Cloudflare Durable Object background feed" });
     }
