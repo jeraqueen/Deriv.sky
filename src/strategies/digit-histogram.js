@@ -53,7 +53,7 @@ export function buildDigitHistogram(digits) {
     reason: tiedGreen || tiedRed
       ? "Tied extremes resolved deterministically using the widest red/green separation."
       : "Unique highest and lowest digit frequencies.",
-    counts, bars, greenDigit, redDigit,
+    counts, bars, greenDigit, blueDigit, orangeDigit, redDigit,
     greenPercentage: max, redPercentage: min, digitSeparation: separation, bluePercentage: counts[blueDigit], orangePercentage: counts[orangeDigit],
     tiedGreen, tiedRed, windowSize: DIGIT_HISTORY_WINDOW
   };
