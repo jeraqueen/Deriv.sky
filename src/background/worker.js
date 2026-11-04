@@ -337,7 +337,7 @@ export class MarketEngine extends DurableObject {
           const value = Number(price);
           if (!Number.isFinite(value)) return null;
           const precision = Math.max(0,(String(price).split(".")[1] || "").length);
-          const text = value.toFixed(precision).replace(/\\D/g,"");
+          const text = value.toFixed(precision).replace(/\D/g,"");
           return text.length ? Number(text.at(-1)) : null;
         }).filter(digit=>Number.isInteger(digit) && digit>=0 && digit<=9);
         this.digitHistory.set(market,digits.slice(-DIGIT_HISTORY_WINDOW));
