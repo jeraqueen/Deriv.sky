@@ -457,7 +457,7 @@ export class MarketEngine extends DurableObject {
         if (chosen) {
           const timestamp = new Date().toISOString();
           const signalId = market + ":" + chosen.strategy + ":" + chosen.cycle + ":" + tickId;
-          const signal = { signalId, strategy:chosen.strategy, market, barrier:chosen.barrier, contractType:chosen.contractType, duration:chosen.duration, durationUnit:chosen.durationUnit, cycle:chosen.cycle, timestamp, orderPlaced: false };
+          const signal = { signalId, strategy:chosen.strategy, market, barrier:chosen.barrier, predictedDigit:chosen.barrier, contractType:chosen.contractType, duration:chosen.duration, durationUnit:chosen.durationUnit, cycle:chosen.cycle, timestamp, orderPlaced: false };
           this.state.strategySignals += 1;
           this.state.strategyPendingSignals.push(signal);
           this.state.strategyPendingSignals = this.state.strategyPendingSignals.slice(-13);
@@ -465,7 +465,8 @@ export class MarketEngine extends DurableObject {
           pendingQueueChanged = true;
           diagnostic.action = "PENDING_DEMO_SIGNAL";
           diagnostic.reason = "Valid " + chosen.strategy + " trigger queued for authenticated demo execution.";
-          diagnostic.barrier = evaluation.barrier;
+          diagnostic.barrier = chosen.barrier;
+          diagnostic.predictedDigit = chosen.barrier;
           diagnostic.strategy = chosen.strategy;
           diagnostic.contractType = chosen.contractType;
           diagnostic.duration = chosen.duration;
