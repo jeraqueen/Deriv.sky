@@ -463,8 +463,10 @@ async function executeAutomaticSignal(signal) {
   const receivedAt = Number(signal._receivedAt) || Date.parse(signal.timestamp);
   const ageMs = Date.now() - Date.parse(signal.timestamp);
   const approved = new Set(["1HZ10V","1HZ15V","1HZ25V","1HZ30V","1HZ50V","1HZ75V","1HZ90V","1HZ100V","R_10","R_25","R_50","R_75","R_100"]);
-  if (ageMs < 0 || ageMs > 6000 || invalidatedSignalIds.has(signal.signalId)) {
+  if (ageMs < 0 || ageMs > 10000 || invalidatedSignalIds.has(signal.signalId)) {
     rememberSignal(signal.signalId);
+    try { await acknowledgeSignal(signal, false, "Signal expired before the demo executor could process it."); } catch {}
+    $("tradeStatus").textContent = "Signal expired · no contract opened.";
     return;
   }
   if (!approved.has(signal.market) || !["DIGITDIFF","DIGITMATCH"].includes(signal.contractType) ||
@@ -499,7 +501,7 @@ async function executeAutomaticSignal(signal) {
       $("tradeStatus").textContent = "Signal skipped: quoted stake exceeded $1 USD.";
       return;
     }
-    if (invalidatedSignalIds.has(signal.signalId) || Date.now() - Date.parse(signal.timestamp) > 6000) {
+    if (invalidatedSignalIds.has(signal.signalId) || Date.now() - Date.parse(signal.timestamp) > 10000) {
       rememberSignal(signal.signalId);
       try { await acknowledgeSignal(signal, false, "Signal invalidated or expired while the proposal was being prepared."); } catch {}
       $("tradeStatus").textContent = "Signal expired or setup changed before purchase. No contract was sent.";
@@ -728,11 +730,21 @@ function renderScanner(data) {
         const name=document.createElement("span"); name.textContent=item.market;
         const state=document.createElement("span");
         state.className=item.action==="PENDING_DEMO_SIGNAL"?"positive":item.status==="COLLECTING"?"warn":"negative";
-        state.textContent=item.action==="PENDING_DEMO_SIGNAL"?"ENTRY FOUND":item.action==="BUY_INTENT"?"ENTRY FOUND":item.status==="COLLECTING"?"LOADING "+item.sampleSize+"/100":"NO ENTRY";
+        const hasSignal=item.action==="PENDING_DEMO_SIGNAL" || item.action==="BUY_INTENT";
+        state.textContent=hasSignal?"ENTRY FOUND":item.status==="COLLECTING"?"LOADING "+item.sampleSize+"/100":"NO ENTRY";
         head.append(name,state);
         const detail=document.createElement("div"); detail.className="contract-meta";
-        detail.textContent="Sample "+item.sampleSize+"/100 · "+(item.reason||item.action||item.status||"Scanning");
-        line.append(head,detail); boardList.append(line);
+        const predicted=item.predictedDigit ?? item.barrier;
+        detail.textContent=(hasSignal && predicted!==null && predicted!==undefined
+          ? "PREDICTED DIGIT "+predicted+" · "+(item.strategy||"STRATEGY")+" · "+(item.contractType||"")+" · "
+          : "")+"Sample "+item.sampleSize+"/100 · "+(item.reason||item.action||item.status||"Scanning");
+        line.append(head,detail);
+        if(hasSignal && item.signalId) {
+          line.dataset.signalExpiresAt=String(Date.parse(item.timestamp || new Date().toISOString())+10000);
+          const expiry=document.createElement("div"); expiry.className="contract-meta signal-expiry";
+          expiry.textContent="Signal expires in 10s"; line.append(expiry);
+        }
+        boardList.append(line);
       }
     }
   }
@@ -755,6 +767,13 @@ scannerAction("status").catch(e => $("feedStatus").textContent = e.message);
 updateAutoToggle();
 renderContractBoard();
 setInterval(monitorAutomaticTrading, 5000);
+setInterval(()=>{
+  document.querySelectorAll("#boardMarketScanList [data-signal-expires-at]").forEach(line=>{
+    const left=Math.max(0,Math.ceil((Number(line.dataset.signalExpiresAt)-Date.now())/1000));
+    const label=line.querySelector(".signal-expiry");
+    if(label) label.textContent=left>0?"Signal expires in "+left+"s":"Signal expired · awaiting next scan";
+  });
+},250);
 </script>
 </body>
 </html>
