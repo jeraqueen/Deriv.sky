@@ -719,7 +719,7 @@ function renderScanner(data) {
 }
 $("scanQualifyingMarkets").addEventListener("click", async () => {
   $("qualifyingMarketStatus").textContent = "Scanning standard Volatility markets using their latest 100 ticks…";
-  try { await scannerAction("status"); }
+  try { await scannerAction("start"); await scannerAction("status"); }
   catch (e) { $("qualifyingMarketStatus").textContent = "Market scan failed: " + e.message; }
 });
 $("feedStart").addEventListener("click", async () => {
