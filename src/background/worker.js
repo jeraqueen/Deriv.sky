@@ -162,7 +162,7 @@ export class MarketEngine extends DurableObject {
       return Response.json({ ok:true, wins:rotation.consecutiveWins, consecutiveWins:rotation.consecutiveWins,
         losses:rotation.losses || 0, completed, nextMarket:this.activeRotationMarket() });
     }
-    if (url.pathname === "/market-scan") {
+    if (url.pathname === "/markets") {
       const results = [];
       for (const [market, history] of this.digitHistory.entries()) {
         if (!/^R_(10|25|50|75|100)$/.test(market) || history.length < DIGIT_HISTORY_WINDOW) continue;
