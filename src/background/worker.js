@@ -341,7 +341,7 @@ export class MarketEngine extends DurableObject {
           return text.length ? Number(text.at(-1)) : null;
         }).filter(digit=>Number.isInteger(digit) && digit>=0 && digit<=9);
         this.digitHistory.set(market,digits.slice(-DIGIT_HISTORY_WINDOW));
-        this.state.marketScanResults = STANDARD_MARKETS.map(name=>{
+        this.state.marketScanResults = APPROVED_MARKET_ORDER.map(name=>{
           const n=(this.digitHistory.get(name)||[]).length;
           return {market:name,sampleSize:n,required:DIGIT_HISTORY_WINDOW,
             remaining:Math.max(0,DIGIT_HISTORY_WINDOW-n),status:n>=DIGIT_HISTORY_WINDOW?"READY":"COLLECTING"};
@@ -403,7 +403,7 @@ export class MarketEngine extends DurableObject {
 
       // Evaluate every approved market independently and simultaneously.
       const rotation = this.rotationStateFor(market);
-      this.state.marketScanResults = STANDARD_MARKETS.map(name=>{
+      this.state.marketScanResults = APPROVED_MARKET_ORDER.map(name=>{
         const n=(this.digitHistory.get(name)||[]).length;
         return {market:name,sampleSize:n,required:DIGIT_HISTORY_WINDOW,
           remaining:Math.max(0,DIGIT_HISTORY_WINDOW-n),status:n>=DIGIT_HISTORY_WINDOW?"READY":"COLLECTING"};
