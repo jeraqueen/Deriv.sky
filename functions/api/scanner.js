@@ -4,7 +4,7 @@ export async function onRequest({ request, env }) {
   }
   const url = new URL(request.url);
   const action = url.searchParams.get("action") || "status";
-  const allowed = new Set(["status", "start", "stop", "test", "ack", "result", "stream"]);
+  const allowed = new Set(["status", "start", "stop", "test", "ack", "result", "stream", "markets"]);
   if (!allowed.has(action)) return Response.json({ ok: false, error: "Unsupported scanner action." }, { status: 400 });
   if (action === "stream") {
     if (request.method !== "GET" || request.headers.get("Upgrade") !== "websocket") return new Response("WebSocket upgrade required.", { status: 426 });
@@ -12,13 +12,13 @@ export async function onRequest({ request, env }) {
     const stub = env.MARKET_ENGINE.get(id);
     return stub.fetch(request);
   }
-  if (action !== "status" && action !== "test" && request.method !== "POST") {
+  if (action !== "status" && action !== "test" && action !== "markets" && request.method !== "POST") {
     return Response.json({ ok: false, error: "POST is required for this action." }, { status: 405 });
   }
   const id = env.MARKET_ENGINE.idFromName("sky-bot-volatility-scanner");
   const stub = env.MARKET_ENGINE.get(id);
   return stub.fetch("https://engine/" + action, {
-    method: action === "status" ? "GET" : "POST",
+    method: action === "status" || action === "markets" ? "GET" : "POST",
     body: action === "ack" || action === "result" ? request.body : undefined,
     headers: action === "ack" || action === "result" ? { "content-type": "application/json" } : undefined
   });
