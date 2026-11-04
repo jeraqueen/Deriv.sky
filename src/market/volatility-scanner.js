@@ -6,7 +6,7 @@
  */
 export const PUBLIC_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
 
-export const APPROVED_VOLATILITY_SYMBOLS = new Set(["1HZ10V","1HZ15V","1HZ25V","1HZ30V","1HZ50V","1HZ75V","1HZ90V","1HZ100V","R_10","R_25","R_50","R_75","R_100"]);
+export const APPROVED_VOLATILITY_SYMBOLS = new Set(["R_10","R_25","R_50","R_75","R_100"]);
 
 export function marketSymbol(item) {
   return String(item?.underlying_symbol || item?.symbol || "");
