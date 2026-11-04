@@ -40,6 +40,33 @@ export default {
       }
     }
 
+    // Route scanner API requests to the separately deployed Durable Object engine.
+    // Without this route, /api/scanner falls through to ASSETS and returns index.html,
+    // causing the browser's response.json() call to fail with "Unexpected token '<'".
+    if (url.pathname === "/api/scanner") {
+      if (!env.MARKET_ENGINE) return json({ ok: false, error: "Background scanner binding is not configured." }, 503);
+      const action = url.searchParams.get("action") || "status";
+      const allowed = new Set(["status", "start", "stop", "test", "ack", "result", "stream", "markets"]);
+      if (!allowed.has(action)) return json({ ok: false, error: "Unsupported scanner action." }, 400);
+      if (action === "stream") {
+        if (request.method !== "GET" || request.headers.get("Upgrade") !== "websocket") {
+          return json({ ok: false, error: "WebSocket upgrade required." }, 426);
+        }
+        const id = env.MARKET_ENGINE.idFromName("sky-bot-volatility-scanner");
+        return env.MARKET_ENGINE.get(id).fetch("https://engine/stream", request);
+      }
+      if (action !== "status" && action !== "markets" && action !== "test" && request.method !== "POST") {
+        return json({ ok: false, error: "POST is required for this scanner action." }, 405);
+      }
+      const id = env.MARKET_ENGINE.idFromName("sky-bot-volatility-scanner");
+      const method = ["status", "markets"].includes(action) ? "GET" : "POST";
+      return env.MARKET_ENGINE.get(id).fetch("https://engine/" + action, {
+        method,
+        body: ["ack", "result"].includes(action) ? request.body : undefined,
+        headers: ["ack", "result"].includes(action) ? { "content-type": "application/json" } : undefined
+      });
+    }
+
     if (url.pathname === "/api/accounts" && request.method === "GET") {
       return derivRequest(request, "/trading/v1/options/accounts");
     }
