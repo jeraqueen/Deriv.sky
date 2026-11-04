@@ -633,15 +633,15 @@ $("disconnect").addEventListener("click",()=>{
 </script>
 <script>
 async function scanQualifyingMarkets() {
-  $("marketScanStatus").textContent = "Scanning latest 100 ticks from standard Volatility markets…";
-  $("scanMarkets").disabled = true;
+  $("qualifyingMarketStatus").textContent = "Scanning latest 100 ticks from standard Volatility markets…";
+  $("scanQualifyingMarkets").disabled = true;
   try {
     // Start/maintain the public tick feed for analysis only; this does not enable trading.
     await fetch("/api/scanner?action=start", {method:"POST", headers:{"content-type":"application/json"}});
     const response = await fetch("/api/scanner?action=markets", {cache:"no-store"});
     const data = await response.json();
     if (!response.ok || !data.ok) throw new Error(data.error || "Market scan failed.");
-    const list = $("marketScanResults");
+    const list = $("qualifyingMarketResults");
     list.replaceChildren();
     if (!data.qualifying.length) {
       const empty=document.createElement("div"); empty.className="empty-state";
@@ -662,11 +662,11 @@ async function scanQualifyingMarkets() {
         card.append(head,meta,ranks); list.appendChild(card);
       }
     }
-    $("marketScanStatus").textContent=data.qualifying.length+" qualifying market(s) from "+data.marketsScanned+" standard Volatility markets. Window: "+data.window+" ticks.";
-  } catch(error) { $("marketScanStatus").textContent=error.message; }
-  finally { $("scanMarkets").disabled=false; }
+    $("qualifyingMarketStatus").textContent=data.qualifying.length+" qualifying market(s) from "+data.marketsScanned+" standard Volatility markets. Window: "+data.window+" ticks.";
+  } catch(error) { $("qualifyingMarketStatus").textContent=error.message; }
+  finally { $("scanQualifyingMarkets").disabled=false; }
 }
-$("scanMarkets").addEventListener("click",scanQualifyingMarkets);
+$("scanQualifyingMarkets").addEventListener("click",scanQualifyingMarkets);
 \nasync function scannerAction(action) {
   const response = await fetch("/api/scanner?action=" + action, {
     method: action === "status" ? "GET" : "POST",
@@ -720,11 +720,6 @@ function renderScanner(data) {
   if (data.lastError) $("feedNote").textContent = "Feed warning: " + data.lastError + ". No trades are enabled.";
   if (data.test) $("feedNote").textContent = data.note || "Live feed test completed. No trades were placed.";
 }
-$("scanQualifyingMarkets").addEventListener("click", async () => {
-  $("qualifyingMarketStatus").textContent = "Scanning standard Volatility markets using their latest 100 ticks…";
-  try { await scannerAction("start"); await scannerAction("status"); }
-  catch (e) { $("qualifyingMarketStatus").textContent = "Market scan failed: " + e.message; }
-});
 $("feedStart").addEventListener("click", async () => {
   $("feedStatus").textContent = "Starting…";
   try { await scannerAction("start"); } catch (e) { $("feedStatus").textContent = e.message; }
