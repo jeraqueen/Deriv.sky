@@ -25,6 +25,13 @@ function symbolCode(item) {
 function isVolatility(item) {
   return APPROVED_VOLATILITY_SYMBOLS.has(symbolCode(item));
 }
+function meetsDigitFilters(histogram) {
+  if (!histogram?.counts || histogram.counts.length !== 10 || !Array.isArray(histogram.bars)) return false;
+  const bars = new Map(histogram.bars.map(bar => [bar.digit, bar]));
+  return histogram.counts[0] < 10 && histogram.counts[9] < 10 &&
+    (bars.get(4)?.color || "neutral") === "neutral" &&
+    (bars.get(5)?.color || "neutral") === "neutral";
+}
 
 export class MarketEngine extends DurableObject {
   constructor(ctx, env) {
@@ -382,22 +389,35 @@ export class MarketEngine extends DurableObject {
       if (history.length > DIGIT_HISTORY_WINDOW) history.shift();
       this.digitHistory.set(market, history);
 
-      // Scan standard Volatility markets (R_*) independently of the 1-second markets.
-      // Conditions: digit 0 and 9 each below 10%; digits 4 and 5 have no colour marker.
+      // Only the five standard Volatility indices are eligible. A market must
+      // satisfy all digit filters before either strategy can create a trade signal.
+      let marketQualifies = false;
+      let filterHistogram = null;
       if (market.startsWith("R_") && history.length >= DIGIT_HISTORY_WINDOW) {
-        const scanHistogram = buildDigitHistogram(history);
-        if (scanHistogram.counts?.length === 10) {
-          const barsByDigit = new Map(scanHistogram.bars.map(bar => [bar.digit, bar]));
-          const qualifies = scanHistogram.counts[0] < 10 && scanHistogram.counts[9] < 10 &&
-            (barsByDigit.get(4)?.color || "neutral") === "neutral" &&
-            (barsByDigit.get(5)?.color || "neutral") === "neutral";
-          const matches = (this.state.marketScanMatches || []).filter(item => item.market !== market);
-          if (qualifies) matches.push({
-            market, digit0Percentage: scanHistogram.counts[0], digit9Percentage: scanHistogram.counts[9],
-            updatedAt: new Date().toISOString()
-          });
-          this.state.marketScanMatches = matches.sort((a,b) => a.market.localeCompare(b.market));
-          this.state.marketScanUpdatedAt = new Date().toISOString();
+        filterHistogram = buildDigitHistogram(history);
+        marketQualifies = meetsDigitFilters(filterHistogram);
+        const matches = (this.state.marketScanMatches || []).filter(item => item.market !== market);
+        if (marketQualifies) matches.push({
+          market, digit0Percentage: filterHistogram.counts[0], digit9Percentage: filterHistogram.counts[9],
+          updatedAt: new Date().toISOString()
+        });
+        this.state.marketScanMatches = matches.sort((a,b) => a.market.localeCompare(b.market));
+        this.state.marketScanUpdatedAt = new Date().toISOString();
+        pendingQueueChanged = true;
+      }
+
+      // If a market loses qualification before a pending signal is executed,
+      // invalidate that signal so it cannot bypass the user's filters.
+      if (!marketQualifies) {
+        const pendingForMarket = (this.state.strategyPendingSignals || []).filter(item => item.market === market);
+        if (pendingForMarket.length) {
+          for (const item of pendingForMarket) {
+            if (item.strategy !== "MATCHES") this.differStrategy.releasePending(item.market, item.cycle);
+            realtimeEvents.push({ type: "signal_invalidated", signalId: item.signalId, market,
+              reason: "Market no longer meets the digit 0/9 and neutral 4/5 filters." });
+          }
+          this.state.strategyPendingSignals = this.state.strategyPendingSignals.filter(item => item.market !== market);
+          this.rotationStateFor(market).pending = false;
           pendingQueueChanged = true;
         }
       }
@@ -414,8 +434,12 @@ export class MarketEngine extends DurableObject {
       if (history.length >= DIGIT_HISTORY_WINDOW) {
         const histogram = buildDigitHistogram(history);
         const tickId = ++this.tickSequence;
-        const evaluation = this.differStrategy.observe({ market, bars: histogram.bars, currentDigit: digit, tickId });
-        const matchesEvaluation = evaluateMatchesStrategy({ counts:histogram.counts, currentDigit:digit, tickId });
+        const evaluation = marketQualifies
+          ? this.differStrategy.observe({ market, bars: histogram.bars, currentDigit: digit, tickId })
+          : { action: "WAIT", reason: "Market does not meet the required digit filters." };
+        const matchesEvaluation = marketQualifies
+          ? evaluateMatchesStrategy({ counts:histogram.counts, currentDigit:digit, tickId })
+          : { action: "WAIT", reason: "Market does not meet the required digit filters." };
         if (evaluation.action !== "PENDING") {
           const removedSignals = this.state.strategyPendingSignals.filter(item => item.market === market);
           this.state.strategyPendingSignals = this.state.strategyPendingSignals.filter(item => item.market !== market);
