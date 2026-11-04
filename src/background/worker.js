@@ -508,7 +508,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const stub = await engine(env);
-    const path = ["/start", "/stop", "/status", "/ensure", "/test", "/ack", "/result", "/stream"].includes(url.pathname) ? url.pathname : "/status";
+    const path = ["/start", "/stop", "/status", "/ensure", "/test", "/ack", "/result", "/stream", "/markets"].includes(url.pathname) ? url.pathname : "/status";
     if (path === "/stream") {
       if (request.headers.get("Upgrade") !== "websocket") return new Response("WebSocket upgrade required.", { status: 426 });
       return stub.fetch(request);
