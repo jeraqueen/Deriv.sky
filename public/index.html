@@ -54,6 +54,15 @@
       <div class="metric"><span class="muted">Trading mode</span><b id="tradingMode">AUTO DEMO</b></div>
     </div>
     <div id="accountStatus" class="status"></div>
+    <section class="metric" id="qualifyingMarketPanel" style="margin-top:16px">
+      <div class="row" style="justify-content:space-between">
+        <div><h2 style="margin:0">Qualifying Volatility markets</h2><div class="muted">Standard markets only · excludes 1-second markets</div></div>
+        <button id="scanQualifyingMarkets" class="secondary">Scan markets</button>
+      </div>
+      <p class="muted">Digit 0 below 10%, digit 9 below 10%, and digits 4 and 5 without green, orange, blue or red markers.</p>
+      <div id="qualifyingMarketStatus" class="status">Press Scan markets to check the latest 100 ticks per market.</div>
+      <div id="qualifyingMarketResults" class="contract-list"><div class="empty-state">No scan results yet.</div></div>
+    </section>
     <div class="row" style="margin-top:14px">
       <button id="autoToggle" class="start-board-button">▶ Start Board</button>
     </div>
@@ -673,9 +682,46 @@ function renderScanner(data) {
   $("tickCount").textContent = String(data.ticks ?? 0);
   $("latestDigit").textContent = data.latestDigit === null || data.latestDigit === undefined ? "—" : String(data.latestDigit);
   $("latestMarket").textContent = data.latestMarket || "No tick received yet";
+  const scanResults = Array.isArray(data.marketScanMatches) ? data.marketScanMatches : [];
+  const scanList = $("qualifyingMarketResults");
+  if (scanList) {
+    scanList.replaceChildren();
+    if (!scanResults.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty-state";
+      empty.textContent = "No markets currently meet all four conditions. Ensure the background scanner is running and has collected 100 ticks per market.";
+      scanList.appendChild(empty);
+    } else {
+      for (const item of scanResults) {
+        const line = document.createElement("div");
+        line.className = "contract-item";
+        const head = document.createElement("div");
+        head.className = "contract-head";
+        const name = document.createElement("span");
+        name.textContent = item.market;
+        const pass = document.createElement("span");
+        pass.className = "positive";
+        pass.textContent = "QUALIFIES";
+        head.append(name, pass);
+        const detail = document.createElement("div");
+        detail.className = "contract-meta";
+        detail.textContent = "Digit 0: " + Number(item.digit0Percentage).toFixed(1) + "% · Digit 9: " + Number(item.digit9Percentage).toFixed(1) + "% · Digits 4 & 5: unmarked";
+        line.append(head, detail);
+        scanList.appendChild(line);
+      }
+    }
+  }
+  const scanStatus = $("qualifyingMarketStatus");
+  if (scanStatus) scanStatus.textContent = "Latest 100-tick scan · " + scanResults.length + " qualifying market(s)" +
+    (data.marketScanUpdatedAt ? " · Updated " + new Date(data.marketScanUpdatedAt).toLocaleTimeString() : " · waiting for tick data");
   if (data.lastError) $("feedNote").textContent = "Feed warning: " + data.lastError + ". No trades are enabled.";
   if (data.test) $("feedNote").textContent = data.note || "Live feed test completed. No trades were placed.";
 }
+$("scanQualifyingMarkets").addEventListener("click", async () => {
+  $("qualifyingMarketStatus").textContent = "Scanning standard Volatility markets using their latest 100 ticks…";
+  try { await scannerAction("status"); }
+  catch (e) { $("qualifyingMarketStatus").textContent = "Market scan failed: " + e.message; }
+});
 $("feedStart").addEventListener("click", async () => {
   $("feedStatus").textContent = "Starting…";
   try { await scannerAction("start"); } catch (e) { $("feedStatus").textContent = e.message; }
