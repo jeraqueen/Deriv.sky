@@ -682,6 +682,15 @@ async function scanQualifyingMarkets() {
   finally { $("scanQualifyingMarkets").disabled=false; }
 }
 $("scanQualifyingMarkets").addEventListener("click",scanQualifyingMarkets);
+async function refreshQualifyingMarkets() {
+  try {
+    const response=await fetch("/api/scanner?action=markets",{cache:"no-store"});
+    const data=await response.json();
+    if(response.ok && data.ok) renderQualifyingMarkets(data);
+  } catch {}
+}
+setInterval(refreshQualifyingMarkets,5000);
+refreshQualifyingMarkets();
 
 async function scannerAction(action) {
   const response = await fetch("/api/scanner?action=" + action, {
@@ -704,58 +713,29 @@ function renderScanner(data) {
   const boardList=$("boardMarketScanList");
   if(boardList) {
     const markets=Array.isArray(data.strategyMarkets)?data.strategyMarkets:[];
+    const progress=Array.isArray(data.marketScanResults)?data.marketScanResults:[];
+    const byName=new Map(markets.map(item=>[item.market,item]));
     boardList.replaceChildren();
-    if(!markets.length) {
+    if(!progress.length) {
       const empty=document.createElement("div"); empty.className="empty-state";
-      empty.textContent="Waiting for each market to complete its first 100-tick sample…";
+      empty.textContent="Waiting for the live feed and market tick samples…";
       boardList.append(empty);
     } else {
-      for(const item of markets) {
+      for(const progressItem of progress) {
+        const item=byName.get(progressItem.market)||progressItem;
         const line=document.createElement("div"); line.className="contract-item";
         const head=document.createElement("div"); head.className="contract-head";
         const name=document.createElement("span"); name.textContent=item.market;
         const state=document.createElement("span");
-        state.className=item.action==="PENDING_DEMO_SIGNAL"?"positive":"warn";
-        state.textContent=item.action==="PENDING_DEMO_SIGNAL"?"ENTRY FOUND":item.action==="BUY_INTENT"?"ENTRY FOUND":"NO ENTRY";
+        state.className=item.action==="PENDING_DEMO_SIGNAL"?"positive":item.status==="COLLECTING"?"warn":"negative";
+        state.textContent=item.action==="PENDING_DEMO_SIGNAL"?"ENTRY FOUND":item.action==="BUY_INTENT"?"ENTRY FOUND":item.status==="COLLECTING"?"LOADING "+item.sampleSize+"/100":"NO ENTRY";
         head.append(name,state);
         const detail=document.createElement("div"); detail.className="contract-meta";
-        detail.textContent="Sample "+item.sampleSize+"/100 · "+(item.strategy||"MATCHES + DIFFERS")+" · "+(item.reason||item.action||"Scanning");
+        detail.textContent="Sample "+item.sampleSize+"/100 · "+(item.reason||item.action||item.status||"Scanning");
         line.append(head,detail); boardList.append(line);
       }
     }
   }
-  const scanResults = Array.isArray(data.marketScanMatches) ? data.marketScanMatches : [];
-  const scanList = $("qualifyingMarketResults");
-  if (scanList) {
-    scanList.replaceChildren();
-    if (!scanResults.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty-state";
-      empty.textContent = "No markets currently meet all four conditions. Ensure the background scanner is running and has collected 100 ticks per market.";
-      scanList.appendChild(empty);
-    } else {
-      for (const item of scanResults) {
-        const line = document.createElement("div");
-        line.className = "contract-item";
-        const head = document.createElement("div");
-        head.className = "contract-head";
-        const name = document.createElement("span");
-        name.textContent = item.market;
-        const pass = document.createElement("span");
-        pass.className = "positive";
-        pass.textContent = "QUALIFIES";
-        head.append(name, pass);
-        const detail = document.createElement("div");
-        detail.className = "contract-meta";
-        detail.textContent = "Digit 0: " + Number(item.digit0Percentage).toFixed(1) + "% · Digit 9: " + Number(item.digit9Percentage).toFixed(1) + "% · Digits 4 & 5: unmarked";
-        line.append(head, detail);
-        scanList.appendChild(line);
-      }
-    }
-  }
-  const scanStatus = $("qualifyingMarketStatus");
-  if (scanStatus) scanStatus.textContent = "Latest 100-tick scan · " + scanResults.length + " qualifying market(s)" +
-    (data.marketScanUpdatedAt ? " · Updated " + new Date(data.marketScanUpdatedAt).toLocaleTimeString() : " · waiting for tick data");
   if (data.lastError) $("feedNote").textContent = "Feed warning: " + data.lastError + ". No trades are enabled.";
   if (data.test) $("feedNote").textContent = data.note || "Live feed test completed. No trades were placed.";
 }
