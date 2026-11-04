@@ -70,7 +70,7 @@
     <p class="small">Board execution is demo-only. Each qualifying strategy signal uses a $1 USD stake.</p>
     <div id="tradeStatus" class="status">Connect and load your verified USD demo account to start automatic execution.</div>
     <div style="margin-top:18px">
-      <div class="row" style="justify-content:space-between"><h2>Live market-by-market scan</h2><span class="pill">13 MARKETS</span></div>
+      <div class="row" style="justify-content:space-between"><h2>Live market-by-market scan</h2><span class="pill">5 STANDARD MARKETS</span></div>
       <p class="muted">Each market is evaluated independently. Markets with no entry remain visible while the others continue scanning and can enter.</p>
       <div id="boardMarketScanList" class="contract-list"><div class="empty-state">Waiting for live market evaluations…</div></div>
     </div>
@@ -569,7 +569,7 @@ async function monitorAutomaticTrading() {
     else {
       const current = $("tradeStatus").textContent;
       if (!/DEMO CONTRACT PLACED|Contract settled|Demo contract is open|Purchase response is uncertain/.test(current)) {
-        $("tradeStatus").textContent = "BOARD RUNNING · Scanning all 13 markets simultaneously for valid MATCHES or DIFFERS entries…";
+        $("tradeStatus").textContent = "BOARD RUNNING · Scanning all five standard markets simultaneously for valid MATCHES or DIFFERS entries…";
       }
     }
   } catch (error) {
@@ -592,7 +592,7 @@ $("autoToggle").addEventListener("click", () => {
     }
     scannerAction("start").then(() => {
       localStorage.setItem("sky_auto_demo_enabled","1");
-      $("tradeStatus").textContent = "Board started. MATCHES and DIFFERS are scanning all 13 markets independently with $1 USD demo stakes.";
+      $("tradeStatus").textContent = "Board started. MATCHES and DIFFERS are scanning all five standard markets independently with $1 USD demo stakes.";
       connectSignalStream(); monitorAutomaticTrading(); drainAutomaticQueue();
     }).catch(error => { autoDemoTradingEnabled = false; updateAutoToggle(); $("tradeStatus").textContent = "Could not start board: " + error.message; });
   } else {
