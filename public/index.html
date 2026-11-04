@@ -44,6 +44,15 @@
     <div class="row"><button id="connect">Connect with Deriv</button><button id="disconnect" class="secondary" hidden>Disconnect</button></div>
     <div id="status" class="status">Not connected</div>
   </section>
+    <section class="metric" id="qualifyingMarketPanel" style="margin-top:16px">
+      <div class="row" style="justify-content:space-between">
+        <div><h2 style="margin:0">Qualifying Volatility markets</h2><div class="muted">Standard markets only · excludes 1-second markets</div></div>
+        <button id="scanQualifyingMarkets" class="secondary">Scan markets</button>
+      </div>
+      <p class="muted">Digit 0 below 10%, digit 9 below 10%, and digits 4 and 5 without green, orange, blue or red markers.</p>
+      <div id="qualifyingMarketStatus" class="status">Press Scan markets to check the latest 100 ticks per market.</div>
+      <div id="qualifyingMarketResults" class="contract-list"><div class="empty-state">No scan results yet.</div></div>
+    </section>
   <section class="panel" id="accountPanel" hidden>
     <h2>Account overview</h2>
     <p class="muted">Choose your virtual account to establish the authenticated demo connection.</p>
@@ -54,15 +63,7 @@
       <div class="metric"><span class="muted">Trading mode</span><b id="tradingMode">AUTO DEMO</b></div>
     </div>
     <div id="accountStatus" class="status"></div>
-    <section class="metric" id="qualifyingMarketPanel" style="margin-top:16px">
-      <div class="row" style="justify-content:space-between">
-        <div><h2 style="margin:0">Qualifying Volatility markets</h2><div class="muted">Standard markets only · excludes 1-second markets</div></div>
-        <button id="scanQualifyingMarkets" class="secondary">Scan markets</button>
-      </div>
-      <p class="muted">Digit 0 below 10%, digit 9 below 10%, and digits 4 and 5 without green, orange, blue or red markers.</p>
-      <div id="qualifyingMarketStatus" class="status">Press Scan markets to check the latest 100 ticks per market.</div>
-      <div id="qualifyingMarketResults" class="contract-list"><div class="empty-state">No scan results yet.</div></div>
-    </section>
+
     <div class="row" style="margin-top:14px">
       <button id="autoToggle" class="start-board-button">▶ Start Board</button>
     </div>
