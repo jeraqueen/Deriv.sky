@@ -53,7 +53,7 @@ export default {
           return json({ ok: false, error: "WebSocket upgrade required." }, 426);
         }
         const id = env.MARKET_ENGINE.idFromName("sky-bot-volatility-scanner");
-        return env.MARKET_ENGINE.get(id).fetch("https://engine/stream", request);
+        return env.MARKET_ENGINE.get(id).fetch(request);
       }
       if (action !== "status" && action !== "markets" && action !== "test" && request.method !== "POST") {
         return json({ ok: false, error: "POST is required for this scanner action." }, 405);
