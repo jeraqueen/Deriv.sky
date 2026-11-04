@@ -46,7 +46,7 @@ export class MarketEngine extends DurableObject {
       strategyMode: "SIGNALS_FOR_AUTHENTICATED_DEMO_EXECUTION", strategyWindow: DIGIT_HISTORY_WINDOW,
       strategyReadyMarkets: 0, strategySignals: 0,
       strategyLastEvaluation: null, strategyLastSignal: null, strategyMarkets: [],
-      strategyPendingSignals: [], strategyLastExecution: null,
+      strategyPendingSignals: [], marketScanMatches: [], marketScanUpdatedAt: null, strategyLastExecution: null,
       rotationIndex: 0, rotationRound: 1, rotationByMarket: {}
     };
     this.ready = this.ctx.blockConcurrencyWhile(async () => {
@@ -361,6 +361,26 @@ export class MarketEngine extends DurableObject {
       history.push(digit);
       if (history.length > DIGIT_HISTORY_WINDOW) history.shift();
       this.digitHistory.set(market, history);
+
+      // Scan standard Volatility markets (R_*) independently of the 1-second markets.
+      // Conditions: digit 0 and 9 each below 10%; digits 4 and 5 have no colour marker.
+      if (market.startsWith("R_") && history.length >= DIGIT_HISTORY_WINDOW) {
+        const scanHistogram = buildDigitHistogram(history);
+        if (scanHistogram.counts?.length === 10) {
+          const barsByDigit = new Map(scanHistogram.bars.map(bar => [bar.digit, bar]));
+          const qualifies = scanHistogram.counts[0] < 10 && scanHistogram.counts[9] < 10 &&
+            (barsByDigit.get(4)?.color || "neutral") === "neutral" &&
+            (barsByDigit.get(5)?.color || "neutral") === "neutral";
+          const matches = (this.state.marketScanMatches || []).filter(item => item.market !== market);
+          if (qualifies) matches.push({
+            market, digit0Percentage: scanHistogram.counts[0], digit9Percentage: scanHistogram.counts[9],
+            updatedAt: new Date().toISOString()
+          });
+          this.state.marketScanMatches = matches.sort((a,b) => a.market.localeCompare(b.market));
+          this.state.marketScanUpdatedAt = new Date().toISOString();
+        }
+      }
+
       // Build history for every market, but only evaluate/enter on the current
       // rotation market. Two consecutive wins move the board to the next market.
       if (market !== this.activeRotationMarket()) { if (pendingQueueChanged) await this.save(); return; }
