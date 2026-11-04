@@ -62,12 +62,12 @@ export class DiffersStrategy {
       return { action: "WAIT", reason: "Incomplete market data." };
     }
 
-    // The Deriv digit histogram must contain each digit exactly once.
+    // The digit histogram must contain each digit exactly once and may use four ranked colours.
     // Reject malformed, duplicated, missing, or unknown bar data.
     const digits = bars.map(b => b?.digit);
     const validBars = digits.every(validDigit) &&
       new Set(digits).size === 10 &&
-      bars.every(b => b && ["red", "green", "neutral"].includes(b.color) &&
+      bars.every(b => b && ["red", "green", "blue", "orange", "neutral"].includes(b.color) &&
         Number.isFinite(b.percentage) && b.percentage >= 0 && b.percentage <= 100);
     if (!validBars) {
       return { action: "WAIT", reason: "Digit bars are incomplete, duplicated, or contain invalid percentages." };
